@@ -19,11 +19,14 @@ export async function seedDatabase() {
     { upsert: true }
   );
 
+  // Clear existing tracks to avoid duplicate/stale sample tracks
+  await Track.deleteMany({});
+
   await Promise.all(
     tracks.map((track) => {
       return Track.updateOne(
         { title: track.title, artist: track.artist },
-        { $setOnInsert: track },
+        { $set: track },
         { upsert: true }
       );
     })

@@ -7,7 +7,7 @@ export async function listTracks(req, reply) {
     : {};
 
   const tracks = await Track.find(filter)
-    .select("title artist album duration mood color audioUrl plays")
+    .select("title artist album duration mood color audioUrl plays coverUrl")
     .sort({ createdAt: 1 })
     .lean();
 
@@ -26,7 +26,7 @@ export async function createTrack(req, reply) {
     });
   }
 
-  const { title, artist, album, duration, mood, color, audioUrl } = req.body ?? {};
+  const { title, artist, album, duration, mood, color, audioUrl, coverUrl } = req.body ?? {};
 
   if (!title || !artist || !album || !duration || !mood || !color || !audioUrl) {
     return reply.code(400).send({
@@ -41,7 +41,8 @@ export async function createTrack(req, reply) {
     duration,
     mood,
     color,
-    audioUrl
+    audioUrl,
+    coverUrl: coverUrl || ""
   });
 
   return reply.code(201).send({

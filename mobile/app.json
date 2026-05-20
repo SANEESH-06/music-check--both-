@@ -1,0 +1,35 @@
+{
+  "expo": {
+    "name": "EchoWave",
+    "slug": "echowave-mobile",
+    "version": "1.0.0",
+    "sdkVersion": "54.0.0",
+    "orientation": "portrait",
+    "scheme": "echowave",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "splash": {
+      "backgroundColor": "#f0f4ff"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.echowave.mobile"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#f0f4ff"
+      },
+      "package": "com.echowave.mobile"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-av",
+        {
+          "microphonePermission": false
+        }
+      ],
+      "expo-font"
+    ]
+  }
+}

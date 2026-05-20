@@ -1,37 +1,17 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, memo, useCallback } from "react";
 import {
-  Check,
-  Crown,
-  Download,
-  Heart,
-  ListMusic,
-  LogOut,
-  Moon,
-  Pause,
-  Play,
-  Plus,
-  Repeat,
-  Search,
-  Settings,
-  Shuffle,
-  SkipBack,
-  SkipForward,
-  SlidersHorizontal,
-  Star,
-  Sun,
-  Volume2,
-  X,
-  Trash2,
-  Music,
-  Clock,
-  Radio,
-  ListOrdered
+  Check, Crown, Download, Heart, ListMusic, LogOut, Menu, Moon, Pause, Play, Plus,
+  Repeat, Search, Settings, Shuffle, SkipBack, SkipForward, SlidersHorizontal,
+  Star, Sun, Volume2, X, Trash2, Music, Clock, Radio, ListOrdered, Upload,
+  FileAudio, Lock, EyeOff, Sparkles, Disc
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { getTracks } from "@/lib/tracks";
 import { uploadTrack, scrapeTracks } from "@/lib/api";
+import { useToast } from "@/components/ui/Toast";
+import Dropdown from "@/components/ui/Dropdown";
 
 const libraryDefaults = {
   liked: [],
@@ -49,7 +29,7 @@ const libraryDefaults = {
     highQuality: true,
     glassIntensity: 70,
     reduceMotion: false,
-    theme: "dark"
+    theme: "light"
   }
 };
 
@@ -80,8 +60,19 @@ function readLibrary() {
   }
 }
 
+function isUrlCrossOrigin(url) {
+  if (!url) return false;
+  try {
+    const origin = new URL(url, window.location.href).origin;
+    return origin !== window.location.origin;
+  } catch {
+    return false;
+  }
+}
+
+
 // Optimized Progress Bar Component to prevent MusicPlayer re-renders during playback
-function TrackProgressBar({ audioRef, activeTrackUrl }) {
+function TrackProgressBar({ audioRef, activeTrackUrl, useEqualizer }) {
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
 
@@ -115,7 +106,7 @@ function TrackProgressBar({ audioRef, activeTrackUrl }) {
       audio.removeEventListener("durationchange", handleLoadedMetadata);
       audio.removeEventListener("canplay", handleLoadedMetadata);
     };
-  }, [audioRef.current, activeTrackUrl]);
+  }, [audioRef.current, activeTrackUrl, useEqualizer]);
 
   const seek = (event) => {
     const nextTime = Number(event.target.value);
@@ -143,12 +134,40 @@ function TrackProgressBar({ audioRef, activeTrackUrl }) {
   );
 }
 
+// Creative Commons Badge Component
+function CreativeCommonsBadge({ title }) {
+  return (
+    <span className="cc-badge" title={title || "Creative Commons / Royalty Free Audio"} style={{ display: "inline-flex", alignItems: "center", gap: "3px", verticalAlign: "middle" }}>
+      <svg
+        width="11"
+        height="11"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        style={{ flexShrink: 0 }}
+      >
+        <circle cx="12" cy="12" r="10" />
+        <path d="M10 9.3a2.8 2.8 0 0 0-3.5 1 3.1 3.1 0 0 0 0 3.4 2.8 2.8 0 0 0 3.5 1" />
+        <path d="M17 9.3a2.8 2.8 0 0 0-3.5 1 3.1 3.1 0 0 0 0 3.4 2.8 2.8 0 0 0 3.5 1" />
+      </svg>
+      <span>CC</span>
+    </span>
+  );
+}
+
 // Spotify-style Grid Card Component
-function TrackCard({ track, onPlay }) {
+const TrackCard = memo(function TrackCard({ track, onPlay }) {
   return (
     <div className="spotify-card" onClick={onPlay}>
-      <div className="card-image-wrap" style={{ background: `linear-gradient(135deg, ${track.color || "#6d5dfc"}, #1f2937)` }}>
-        <span className="card-thumb-char">{track.title.slice(0, 1)}</span>
+      <div className="card-image-wrap" style={{ background: track.coverUrl ? "none" : `linear-gradient(135deg, ${track.color || "#6d5dfc"}, #1f2937)`, position: "relative", overflow: "hidden" }}>
+        {track.coverUrl ? (
+          <img src={track.coverUrl} alt={track.title} style={{ width: "100%", height: "100%", objectFit: "cover", position: "absolute", top: 0, left: 0, borderRadius: "inherit" }} />
+        ) : (
+          <span className="card-thumb-char">{track.title.slice(0, 1)}</span>
+        )}
         <button className="spotify-play-btn" type="button" aria-label="Play">
           <Play size={20} fill="currentColor" style={{ marginLeft: "2px" }} />
         </button>
@@ -156,22 +175,90 @@ function TrackCard({ track, onPlay }) {
       <div className="card-info">
         <strong className="card-title">
           {track.title}
-          <span className="cc-badge" title="No copyright / CC Creative Commons royalty free audio">CC</span>
+          <CreativeCommonsBadge title="No copyright / CC Creative Commons royalty free audio" />
         </strong>
         <span className="card-artist">{track.artist}</span>
       </div>
     </div>
   );
-}
+});
+
+// Memoized Track Row Component for extreme performance
+const TrackRow = memo(function TrackRow({
+  track,
+  originalIndex,
+  isActive,
+  isPlaying,
+  playTrack,
+  togglePlay,
+  isLiked,
+  isWishlisted,
+  toggleArrayItem,
+  selectedPlaylistId,
+  addToPlaylist,
+  addToQueue,
+  activeView,
+  removeFromQueue,
+  removeFromPlaylist
+}) {
+  return (
+    <article className={isActive ? "track-row active" : "track-row"}>
+      <button className="track-main" type="button" onClick={() => playTrack(originalIndex)}>
+        {track.coverUrl ? (
+          <img src={track.coverUrl} alt={track.title} className="track-thumb" style={{ objectFit: "cover", background: "none" }} />
+        ) : (
+          <span className="track-thumb" style={{ background: track.color }}>{track.title.slice(0, 1)}</span>
+        )}
+        <span className="track-meta">
+          <strong>
+            {track.title}
+            {isActive && isPlaying && (
+              <span className="music-playing-waves">
+                <span className="wave-bar" /><span className="wave-bar" /><span className="wave-bar" /><span className="wave-bar" />
+              </span>
+            )}
+            <CreativeCommonsBadge />
+          </strong>
+          <small>{track.artist} / {track.album}</small>
+        </span>
+        <span className="track-mood">{track.mood}</span>
+        <span className="track-duration">{track.duration}</span>
+      </button>
+      <div className="row-actions">
+        <button className="mini-action" type="button" aria-label={isActive && isPlaying ? "Pause" : `Play ${track.title}`}
+          onClick={() => isActive ? togglePlay() : playTrack(originalIndex)}>
+          {isActive && isPlaying ? <Pause size={14} fill="currentColor" /> : <Play size={14} />}
+        </button>
+        <button className={isLiked ? "mini-action active" : "mini-action"} type="button" aria-label="Like" onClick={() => toggleArrayItem("liked", track.id)}><Heart size={14} fill="currentColor" /></button>
+        <button className={isWishlisted ? "mini-action active" : "mini-action"} type="button" aria-label="Wishlist" onClick={() => toggleArrayItem("wishlist", track.id)}><Star size={14} fill="currentColor" /></button>
+        {activeView !== "playlist" && (
+          <button className="mini-action" type="button" aria-label="Add to playlist" onClick={() => addToPlaylist(selectedPlaylistId, track.id)}><Plus size={14} /></button>
+        )}
+        <button className="mini-action" type="button" aria-label="Add to queue" onClick={() => addToQueue(track.id)}><ListOrdered size={14} /></button>
+        {activeView === "queue" && (
+          <button className="mini-action" type="button" aria-label="Remove from queue" onClick={() => removeFromQueue(track.id)} style={{ color: "var(--danger)" }}><Trash2 size={14} /></button>
+        )}
+        {activeView === "playlist" && (
+          <button className="mini-action" type="button" aria-label="Remove from playlist" onClick={() => removeFromPlaylist(selectedPlaylistId, track.id)} style={{ color: "var(--danger)" }}><Trash2 size={14} /></button>
+        )}
+      </div>
+    </article>
+  );
+});
 
 
 export default function MusicPlayer() {
   const router = useRouter();
+  const { toast } = useToast();
+  const [playlistToDelete, setPlaylistToDelete] = useState(null);
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
+  const [isMiniPlayerOpen, setIsMiniPlayerOpen] = useState(false);
   const audioRef = useRef(null);
   const [tracks, setTracks] = useState([]);
   const [user, setUser] = useState(null);
   const [activeIndex, setActiveIndex] = useState(0);
   const [activeView, setActiveView] = useState("all");
+  const [selectedAlbum, setSelectedAlbum] = useState(null);
   const [selectedPlaylistId, setSelectedPlaylistId] = useState("pl_favorites");
   const [library, setLibrary] = useState(libraryDefaults);
   const [newPlaylistName, setNewPlaylistName] = useState("");
@@ -206,6 +293,14 @@ export default function MusicPlayer() {
   const [uploadMessage, setUploadMessage] = useState("");
   const [uploadError, setUploadError] = useState("");
   const [isUploading, setIsUploading] = useState(false);
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [dragActive, setDragActive] = useState(false);
+  const [activeUploadTab, setActiveUploadTab] = useState("details");
+  const [fileInputKey, setFileInputKey] = useState(0);
+  const [uploadHQ, setUploadHQ] = useState(true);
+  const [uploadPublic, setUploadPublic] = useState(true);
+  const [uploadCache, setUploadCache] = useState(false);
+  const fileInputRef = useRef(null);
 
   // Equalizer Web Audio API Refs
   const audioCtxRef = useRef(null);
@@ -290,6 +385,15 @@ export default function MusicPlayer() {
     });
   }, [tracks]);
 
+  // Dynamic Glass Intensity styling
+  useEffect(() => {
+    const intensity = library?.settings?.glassIntensity ?? 70;
+    const blur = intensity / 4;
+    const opacity = (100 - intensity) / 100;
+    document.documentElement.style.setProperty("--glass-blur", `${blur}px`);
+    document.documentElement.style.setProperty("--glass-opacity", `${opacity}`);
+  }, [library?.settings?.glassIntensity]);
+
   // Sleep Timer countdown
   useEffect(() => {
     if (sleepTimeLeft === null) return;
@@ -310,6 +414,9 @@ export default function MusicPlayer() {
   }, [sleepTimeLeft]);
 
   const activeTrack = tracks[activeIndex];
+  const isCrossOrigin = isUrlCrossOrigin(activeTrack?.audioUrl);
+  const useEqualizer = !isCrossOrigin && eqPreset !== "flat";
+
   const activePlaylist = library.playlists.find((playlist) => playlist.id === selectedPlaylistId);
   const isAdmin = user?.email?.toLowerCase() === "admin@example.com";
 
@@ -356,6 +463,10 @@ export default function MusicPlayer() {
       scopedTracks = tracks.filter((track) => queue.includes(track.id));
     }
 
+    if (activeView === "albums" && selectedAlbum) {
+      scopedTracks = tracks.filter((track) => (track.album || "Unknown Album") === selectedAlbum);
+    }
+
     const normalizedQuery = query.trim().toLowerCase();
 
     if (!normalizedQuery) {
@@ -378,16 +489,49 @@ export default function MusicPlayer() {
     return [...tracks].sort((a, b) => (b.plays || 0) - (a.plays || 0)).slice(0, 6);
   }, [tracks]);
 
+  // Group tracks by album
+  const albumGroups = useMemo(() => {
+    const map = {};
+    tracks.forEach((track) => {
+      const key = track.album || "Unknown Album";
+      if (!map[key]) {
+        map[key] = { name: key, tracks: [], color: track.color, coverUrl: track.coverUrl, artist: track.artist };
+      }
+      map[key].tracks.push(track);
+    });
+    return Object.values(map);
+  }, [tracks]);
+
   const likedCount = library.liked.length;
   const wishlistCount = library.wishlist.length;
 
-  useEffect(() => {
-    if (!audioRef.current) {
-      return;
-    }
+  // Ref to prevent feedback loop between app slider and volumechange listener
+  const isInternalVolumeChange = useRef(false);
 
-    audioRef.current.volume = volume;
+  // Apply volume to audio element whenever volume state changes
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    isInternalVolumeChange.current = true;
+    audio.volume = volume;
+    // Reset flag after the volumechange event fires (next microtask)
+    Promise.resolve().then(() => { isInternalVolumeChange.current = false; });
   }, [volume]);
+
+  // Sync app volume slider when system/browser volume changes externally
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    const handleVolumeChange = () => {
+      if (isInternalVolumeChange.current) return; // skip — we caused this
+      const sysVol = audio.volume;
+      setVolume(sysVol);
+    };
+
+    audio.addEventListener("volumechange", handleVolumeChange);
+    return () => audio.removeEventListener("volumechange", handleVolumeChange);
+  }, []);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -407,55 +551,101 @@ export default function MusicPlayer() {
       audio.removeEventListener("play", handlePlay);
       audio.removeEventListener("pause", handlePause);
     };
-  }, [audioRef.current]);
+  }, [activeTrack?.audioUrl, useEqualizer]);
+
+  // Ref to signal that we want to play as soon as the new src loads
+  const shouldPlayRef = useRef(false);
+  const currentUrlRef = useRef(null);
+  const lastAudioElementRef = useRef(null);
 
   useEffect(() => {
-    if (!audioRef.current || !activeTrack) {
-      return;
+    const audio = audioRef.current;
+    if (!audio || !activeTrack?.audioUrl) return;
+
+    const url = activeTrack.audioUrl;
+
+    // Clean up any pending canplay listener
+    const cleanup = () => audio.removeEventListener("canplay", onCanPlay);
+
+    const tryPlay = () => {
+      cleanup();
+      if (!shouldPlayRef.current) return;
+      shouldPlayRef.current = false;
+      audio.play()
+        .then(() => setIsPlaying(true))
+        .catch((err) => {
+          console.warn("play() failed:", err.message);
+          setIsPlaying(false);
+        });
+    };
+
+    function onCanPlay() { tryPlay(); }
+
+    // Only reload if the URL actually changed or the audio element itself changed
+    if (currentUrlRef.current !== url || lastAudioElementRef.current !== audio) {
+      currentUrlRef.current = url;
+      lastAudioElementRef.current = audio;
+      audio.src = url;
+      audio.load();
     }
 
-    audioRef.current.load();
+    if (!shouldPlayRef.current) return;
 
-    if (isPlaying) {
-      audioRef.current.play().catch(() => setIsPlaying(false));
-      initEqualizer();
+    if (audio.readyState >= 3) {
+      tryPlay();
+    } else {
+      audio.addEventListener("canplay", onCanPlay);
     }
-  }, [activeTrack?.audioUrl]);
+
+    return cleanup;
+  }, [activeTrack?.audioUrl, activeIndex, useEqualizer]); // eslint-disable-line react-hooks/exhaustive-deps
 
 
   // Audio Equalizer setup
   const initEqualizer = () => {
-    if (isEqInitialized.current) return;
     const audio = audioRef.current;
     if (!audio) return;
 
     try {
-      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-      const ctx = new AudioContextClass();
-      audioCtxRef.current = ctx;
+      if (!audioCtxRef.current) {
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        audioCtxRef.current = new AudioContextClass();
 
-      const source = ctx.createMediaElementSource(audio);
+        const lowFilter = audioCtxRef.current.createBiquadFilter();
+        lowFilter.type = "lowshelf";
+        lowFilter.frequency.value = 250;
+
+        const midFilter = audioCtxRef.current.createBiquadFilter();
+        midFilter.type = "peaking";
+        midFilter.Q.value = 1.0;
+        midFilter.frequency.value = 1000;
+
+        const highFilter = audioCtxRef.current.createBiquadFilter();
+        highFilter.type = "highshelf";
+        highFilter.frequency.value = 4000;
+
+        lowFilter.connect(midFilter);
+        midFilter.connect(highFilter);
+        highFilter.connect(audioCtxRef.current.destination);
+
+        eqFiltersRef.current = [lowFilter, midFilter, highFilter];
+      }
+
+      // Reconnect the new audio element
+      if (sourceRef.current) {
+        try {
+          sourceRef.current.disconnect();
+        } catch (e) {
+          // ignore
+        }
+      }
+
+      const source = audioCtxRef.current.createMediaElementSource(audio);
       sourceRef.current = source;
 
-      const lowFilter = ctx.createBiquadFilter();
-      lowFilter.type = "lowshelf";
-      lowFilter.frequency.value = 250;
-
-      const midFilter = ctx.createBiquadFilter();
-      midFilter.type = "peaking";
-      midFilter.Q.value = 1.0;
-      midFilter.frequency.value = 1000;
-
-      const highFilter = ctx.createBiquadFilter();
-      highFilter.type = "highshelf";
-      highFilter.frequency.value = 4000;
-
+      const lowFilter = eqFiltersRef.current[0];
       source.connect(lowFilter);
-      lowFilter.connect(midFilter);
-      midFilter.connect(highFilter);
-      highFilter.connect(ctx.destination);
 
-      eqFiltersRef.current = [lowFilter, midFilter, highFilter];
       isEqInitialized.current = true;
       applyEqPreset(eqPreset);
     } catch (err) {
@@ -464,9 +654,21 @@ export default function MusicPlayer() {
   };
 
   const applyEqPreset = (presetName) => {
+    if (presetName !== "flat" && isUrlCrossOrigin(activeTrack?.audioUrl)) {
+      toast({
+        title: "Equalizer Restriction",
+        description: "Equalizer presets are only supported for same-origin or CORS-enabled tracks. External tracks will play without equalizer effects.",
+        type: "warning"
+      });
+      return;
+    }
+
     setEqPreset(presetName);
-    if (!isEqInitialized.current) {
+    if (presetName === "flat") return;
+
+    if (!isEqInitialized.current || !sourceRef.current) {
       initEqualizer();
+      return;
     }
 
     const filters = eqFiltersRef.current;
@@ -497,15 +699,21 @@ export default function MusicPlayer() {
     }
   };
 
+  useEffect(() => {
+    if (useEqualizer && audioRef.current) {
+      initEqualizer();
+    }
+  }, [useEqualizer, audioRef.current]);
+
   function updateLibrary(updater) {
     setLibrary((current) => {
       return typeof updater === "function" ? updater(current) : updater;
     });
   }
 
-  function toggleArrayItem(key, trackId) {
+  const toggleArrayItem = useCallback((key, trackId) => {
     updateLibrary((current) => {
-      const currentItems = current[key];
+      const currentItems = current[key] || [];
       const nextItems = currentItems.includes(trackId)
         ? currentItems.filter((id) => id !== trackId)
         : [...currentItems, trackId];
@@ -515,7 +723,7 @@ export default function MusicPlayer() {
         [key]: nextItems
       };
     });
-  }
+  }, []);
 
   function toggleSetting(key) {
     updateLibrary((current) => ({
@@ -563,23 +771,39 @@ export default function MusicPlayer() {
 
   function deletePlaylist(playlistId) {
     if (playlistId === "pl_favorites") {
-      alert("Cannot delete the default playlist.");
+      toast({
+        title: "Action Restricted",
+        description: "Cannot delete the default playlist.",
+        type: "error"
+      });
       return;
     }
-    if (confirm("Are you sure you want to delete this playlist?")) {
-      updateLibrary((current) => {
-        const nextPlaylists = current.playlists.filter((p) => p.id !== playlistId);
-        return {
-          ...current,
-          playlists: nextPlaylists
-        };
-      });
-      setSelectedPlaylistId("pl_favorites");
-      setActiveView("all");
-    }
+    setPlaylistToDelete(playlistId);
   }
 
-  function addToPlaylist(playlistId, trackId) {
+  const confirmDeletePlaylist = () => {
+    if (!playlistToDelete) return;
+    const playlistId = playlistToDelete;
+    setPlaylistToDelete(null);
+
+    updateLibrary((current) => {
+      const nextPlaylists = current.playlists.filter((p) => p.id !== playlistId);
+      return {
+        ...current,
+        playlists: nextPlaylists
+      };
+    });
+    setSelectedPlaylistId("pl_favorites");
+    setActiveView("all");
+
+    toast({
+      title: "Success",
+      description: "Playlist deleted successfully.",
+      type: "success"
+    });
+  };
+
+  const addToPlaylist = useCallback((playlistId, trackId) => {
     updateLibrary((current) => ({
       ...current,
       playlists: current.playlists.map((playlist) => {
@@ -593,85 +817,88 @@ export default function MusicPlayer() {
         };
       })
     }));
-  }
+  }, []);
 
-  function addToQueue(trackId) {
+  const removeFromPlaylist = useCallback((playlistId, trackId) => {
+    updateLibrary((current) => ({
+      ...current,
+      playlists: current.playlists.map((playlist) => {
+        if (playlist.id !== playlistId) {
+          return playlist;
+        }
+
+        return {
+          ...playlist,
+          trackIds: playlist.trackIds.filter((id) => id !== trackId)
+        };
+      })
+    }));
+  }, []);
+
+  const addToQueue = useCallback((trackId) => {
     setQueue((current) => [...current, trackId]);
-  }
+  }, []);
 
-  function removeFromQueue(trackId) {
+  const removeFromQueue = useCallback((trackId) => {
     setQueue((current) => current.filter((id) => id !== trackId));
-  }
+  }, []);
 
-  function playTrack(index) {
-    initEqualizer();
-    if (index === activeIndex && audioRef.current) {
-      audioRef.current.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
-      return;
-    }
-
-    setActiveIndex(index);
-    setIsPlaying(true);
-  }
-
-  function togglePlay() {
+  const playTrack = useCallback((index) => {
     const audio = audioRef.current;
+    if (!audio) return;
 
-    if (!audio) {
+    // Resume AudioContext if suspended (required after user gesture)
+    if (audioCtxRef.current?.state === "suspended") {
+      audioCtxRef.current.resume();
+    }
+
+    if (index === activeIndex) {
+      // Same track — just resume
+      audio.play().then(() => setIsPlaying(true)).catch((e) => console.warn(e));
       return;
     }
 
-    initEqualizer();
+    // New track — effect will handle play after src change
+    shouldPlayRef.current = true;
+    setActiveIndex(index);
+  }, [activeIndex]);
 
-    if (isPlaying) {
+  const togglePlay = useCallback(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (audioCtxRef.current?.state === "suspended") {
+      audioCtxRef.current.resume();
+    }
+    if (audio.paused) {
+      audio.play().then(() => setIsPlaying(true)).catch((e) => console.warn(e));
+    } else {
       audio.pause();
       setIsPlaying(false);
-      return;
     }
-
-    audio.play().then(() => setIsPlaying(true)).catch(() => setIsPlaying(false));
-  }
+  }, []);
 
   function nextTrack() {
-    if (!tracks.length) {
-      return;
-    }
-
-    // Play from Queue if available
+    if (!tracks.length) return;
+    shouldPlayRef.current = true;
     if (queue.length > 0) {
       const nextId = queue[0];
       const index = tracks.findIndex((t) => t.id === nextId);
       setQueue((q) => q.slice(1));
-      if (index !== -1) {
-        setActiveIndex(index);
-        setIsPlaying(true);
-        return;
-      }
+      if (index !== -1) { setActiveIndex(index); return; }
     }
-
     if (isShuffle && tracks.length > 1) {
-      let randomIndex = Math.floor(Math.random() * tracks.length);
-
-      while (randomIndex === activeIndex) {
-        randomIndex = Math.floor(Math.random() * tracks.length);
-      }
-
-      setActiveIndex(randomIndex);
-      setIsPlaying(true);
-      return;
+      let r = Math.floor(Math.random() * tracks.length);
+      while (r === activeIndex) r = Math.floor(Math.random() * tracks.length);
+      setActiveIndex(r);
+    } else {
+      setActiveIndex((activeIndex + 1) % tracks.length);
     }
-
-    setActiveIndex((activeIndex + 1) % tracks.length);
-    setIsPlaying(true);
   }
 
   function previousTrack() {
-    if (!tracks.length) {
-      return;
-    }
-
+    if (!tracks.length) return;
+    shouldPlayRef.current = true;
     setActiveIndex((activeIndex - 1 + tracks.length) % tracks.length);
-    setIsPlaying(true);
   }
 
   function handleEnded() {
@@ -702,19 +929,119 @@ export default function MusicPlayer() {
       const token = localStorage.getItem("auth_token");
       const res = await scrapeTracks(token);
       setScrapeMessage(res.message);
+      toast({
+        title: "Success",
+        description: res.message || "Scraping complete.",
+        type: "success"
+      });
       // Refresh track list
       const updatedTracks = await getTracks(token);
       setTracks(updatedTracks);
     } catch (err) {
       setScrapeMessage("Scraping failed: " + err.message);
+      toast({
+        title: "Scraping Failed",
+        description: err.message,
+        type: "error"
+      });
     } finally {
       setIsScraping(false);
     }
   };
 
+  // Helper to format file size
+  const formatFileSize = (bytes) => {
+    if (!bytes) return "0 Bytes";
+    const k = 1024;
+    const sizes = ["Bytes", "KB", "MB", "GB"];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
+  };
+
+  // Helper to process dropped/selected files
+  const processSelectedFile = (file) => {
+    if (!file) return;
+    if (!file.type.startsWith("audio/")) {
+      setUploadError("Please select a valid audio file.");
+      return;
+    }
+    setUploadError("");
+    setSelectedFile(file);
+
+    // Pre-fill Title from filename
+    const titleWithoutExt = file.name.substring(0, file.name.lastIndexOf('.')) || file.name;
+    setUploadForm((prev) => ({
+      ...prev,
+      title: titleWithoutExt
+    }));
+
+    // Auto-extract duration
+    const fileUrl = URL.createObjectURL(file);
+    const tempAudio = new Audio(fileUrl);
+    tempAudio.addEventListener("loadedmetadata", () => {
+      const minutes = Math.floor(tempAudio.duration / 60);
+      const seconds = Math.floor(tempAudio.duration % 60).toString().padStart(2, "0");
+      setUploadForm((prev) => ({
+        ...prev,
+        duration: `${minutes}:${seconds}`
+      }));
+      URL.revokeObjectURL(fileUrl);
+    });
+
+    // Convert file to Base64
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      setUploadForm((prev) => ({
+        ...prev,
+        audioUrl: event.target.result
+      }));
+    };
+    reader.readAsDataURL(file);
+  };
+
+  // Drag and drop event handlers
+  const handleDrag = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.type === "dragenter" || e.type === "dragover") {
+      setDragActive(true);
+    } else if (e.type === "dragleave") {
+      setDragActive(false);
+    }
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragActive(false);
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      processSelectedFile(e.dataTransfer.files[0]);
+    }
+  };
+
+  const removeSelectedFile = () => {
+    setSelectedFile(null);
+    setUploadForm((prev) => ({
+      ...prev,
+      title: "",
+      audioUrl: ""
+    }));
+    setFileInputKey((k) => k + 1);
+  };
+
   // Handle local track upload from modal
   const handleUpload = async (e) => {
     e.preventDefault();
+    if (!uploadForm.audioUrl) {
+      setUploadError("Please select or drop an audio file first.");
+      toast({
+        title: "Selection Required",
+        description: "Please select or drop an audio file first.",
+        type: "warning"
+      });
+      return;
+    }
+
     setUploadError("");
     setUploadMessage("");
     setIsUploading(true);
@@ -723,763 +1050,776 @@ export default function MusicPlayer() {
       const token = localStorage.getItem("auth_token");
       await uploadTrack(token, uploadForm);
       setUploadMessage("Track uploaded successfully!");
-      setUploadForm((prev) => ({ ...prev, title: "" }));
+      toast({
+        title: "Success",
+        description: "Track uploaded successfully!",
+        type: "success"
+      });
+      setUploadForm({
+        title: "",
+        artist: artistOptions[0] || "",
+        album: albumOptions[0] || "",
+        duration: "4:20",
+        mood: moodOptions[0] || "",
+        color: "#6d5dfc",
+        audioUrl: ""
+      });
+      setSelectedFile(null);
+      setFileInputKey((k) => k + 1);
       // Refresh tracks
       const updatedTracks = await getTracks(token);
       setTracks(updatedTracks);
     } catch (err) {
       setUploadError(err.message);
+      toast({
+        title: "Upload Failed",
+        description: err.message,
+        type: "error"
+      });
     } finally {
       setIsUploading(false);
     }
   };
 
   if (isLoading || !activeTrack) {
-    return (
-      <main className="player-shell">
-        <section className="loading-panel">Preparing your premium library...</section>
-      </main>
-    );
+    return <div className="loading-panel">Preparing your premium library…</div>;
   }
 
   return (
-    <main
-      className={library.settings.reduceMotion ? "player-shell reduce-motion" : "player-shell"}
-      style={{ "--glass-level": `${library.settings.glassIntensity}%` }}
-    >
+    <div className={library.settings.reduceMotion ? "player-shell reduce-motion" : "player-shell"}>
       <audio
+        key={useEqualizer ? "eq-audio" : "direct-audio"}
         ref={audioRef}
-        src={activeTrack.audioUrl}
-        crossOrigin="anonymous"
+        crossOrigin={useEqualizer ? "anonymous" : undefined}
         onEnded={handleEnded}
       />
 
-      <section className="player-now" style={{ "--track-color": activeTrack.color }}>
-        <nav className="player-nav">
-          <div>
-            <p className="eyebrow">
-              EchoWave Audio Suite
-              <span className="cc-badge" style={{ marginLeft: "8px" }} title="Creative Commons royalty free audio">CC</span>
-            </p>
-            <h1>EchoWave</h1>
+
+      {/* ── Mobile Header ── */}
+      <div className="mobile-topbar">
+        <button className="mobile-menu-btn" type="button" aria-label="Toggle menu" onClick={() => setIsMobileSidebarOpen((v) => !v)}>
+          <Menu size={22} />
+        </button>
+        <span className="mobile-topbar-title">EchoWave</span>
+        <button className="mobile-menu-btn" type="button" aria-label="Search" onClick={() => document.querySelector('.topbar-search input')?.focus()}>
+          <Search size={20} />
+        </button>
+      </div>
+
+      {/* Sidebar backdrop */}
+      {isMobileSidebarOpen && <div className="sidebar-backdrop" onClick={() => setIsMobileSidebarOpen(false)} />}
+
+      {/* ── Sidebar ── */}
+      <aside className={`sidebar ${isMobileSidebarOpen ? "sidebar-open" : ""}`}>
+        <div className="sidebar-logo">
+          <div className="sidebar-logo-icon" style={{ padding: "4px" }}>
+            <img src="/icon.png" alt="EchoWave Logo" style={{ width: "100%", height: "100%", borderRadius: "50%", objectFit: "cover" }} />
           </div>
-          <div className="nav-actions">
-            <span className="premium-badge">
-              <Crown size={15} aria-hidden="true" />
-              {user?.plan || "Premium"}
-            </span>
-            <button className="icon-button" type="button" aria-label="Open settings" onClick={() => setIsSettingsOpen(true)}>
-              <Settings size={20} />
+          <span>EchoWave</span>
+        </div>
+
+        <p className="sidebar-section-label">Menu</p>
+        <nav className="sidebar-nav">
+          {[
+            ["all", "Home", <Music size={16} />],
+            ["liked", `Likes (${library.liked.length})`, <Heart size={16} />],
+            ["wishlist", `Wishlist (${library.wishlist.length})`, <Star size={16} />],
+            ["albums", "Albums", <Disc size={16} />],
+            ["playlist", "Playlists", <ListMusic size={16} />],
+            ["queue", `Queue (${queue.length})`, <ListOrdered size={16} />],
+          ].map(([view, label, icon]) => (
+            <button key={view} type="button"
+              className={activeView === view ? "sidebar-item active" : "sidebar-item"}
+              onClick={() => { setActiveView(view); if (view !== "albums") setSelectedAlbum(null); setIsMobileSidebarOpen(false); }}>
+              {icon} {label}
+              {activeView === view && <span className="sidebar-dot" />}
             </button>
-            <button className="icon-button" type="button" aria-label="Logout" onClick={logout}>
-              <LogOut size={20} />
-            </button>
-          </div>
+          ))}
         </nav>
 
-        {isAdmin ? (
-          <div className="admin-toolbar" style={{ display: "flex", gap: "10px", marginTop: "4px", alignItems: "center" }}>
-            <span
-              style={{
-                fontSize: "0.8rem",
-                color: "var(--muted)",
-                fontWeight: "bold",
-                background: "rgba(255, 255, 255, 0.08)",
-                padding: "8px 12px",
-                borderRadius: "18px",
-                border: "1px solid var(--line)",
-                whiteSpace: "nowrap"
-              }}
-            >
-              Tracks: {tracks.length}
-            </span>
-            <button
-              className="nav-button"
-              type="button"
-              onClick={() => {
-                setScrapeMessage("");
-                handleScrape();
-              }}
-              disabled={isScraping}
-              style={{
-                flex: 1,
-                background: "rgba(30, 215, 96, 0.2)",
-                border: "1px solid var(--green)",
-                color: "var(--green)",
-                height: "36px",
-                borderRadius: "18px",
-                cursor: "pointer",
-                fontWeight: "bold"
-              }}
-            >
-              {isScraping ? "Scraping..." : "Scrape"}
-            </button>
-            <button
-              className="nav-button"
-              type="button"
-              onClick={() => setIsUploadOpen(true)}
-              style={{
-                flex: 1,
-                background: "rgba(255, 255, 255, 0.1)",
-                border: "1px solid var(--line)",
-                color: "var(--text)",
-                height: "36px",
-                borderRadius: "18px",
-                cursor: "pointer",
-                fontWeight: "bold"
-              }}
-            >
-              Upload
-            </button>
-          </div>
-        ) : null}
+        <p className="sidebar-section-label">General</p>
+        <nav className="sidebar-nav">
+          <button className="sidebar-item" type="button" onClick={() => { setIsSettingsOpen(true); setIsMobileSidebarOpen(false); }}>
+            <Settings size={16} /> Settings
+          </button>
+          <button className="sidebar-item" type="button" onClick={() => { logout(); setIsMobileSidebarOpen(false); }}>
+            <LogOut size={16} /> Log out
+          </button>
+        </nav>
 
+        <div className="sidebar-footer">
+          <span className="premium-badge" style={{ width: "fit-content" }}>
+            <Crown size={13} /> {user?.plan || "Premium"}
+          </span>
+          <p className="sidebar-footer-links">Legal · Privacy · Cookie Policy</p>
+        </div>
+      </aside>
+
+      {/* ── Main area ── */}
+      <div className="main-content">
+
+        {/* Top bar */}
+        <header className="topbar">
+          <div className="topbar-breadcrumb">
+            <span>Discover</span>
+            <span className="crumb-sep">›</span>
+            <span className="crumb-sub">
+              {activeView === "all" ? "Home" : activeView === "liked" ? "Liked Songs" : activeView === "wishlist" ? "Wishlist" : activeView === "albums" ? (selectedAlbum || "Albums") : activeView === "playlist" ? "Playlist" : "Queue"}
+            </span>
+          </div>
+          <div className="topbar-right">
+            <label className="topbar-search">
+              <Search size={14} aria-hidden="true" />
+              <input type="search" placeholder="Search songs" value={query} onChange={(e) => setQuery(e.target.value)} />
+            </label>
+            {isAdmin && (
+              <>
+                <button type="button" onClick={() => { setScrapeMessage(""); handleScrape(); }} disabled={isScraping}
+                  style={{ background: "var(--accent-soft)", border: "1px solid rgba(34,197,94,0.3)", color: "var(--accent)", borderRadius: 999, padding: "0 14px", height: 34, fontWeight: 700, fontSize: "0.78rem", cursor: "pointer" }}>
+                  {isScraping ? "Scraping…" : "Scrape"}
+                </button>
+                <button type="button" onClick={() => setIsUploadOpen(true)}
+                  style={{ background: "var(--surface)", border: "1px solid var(--line)", color: "var(--text)", borderRadius: 999, padding: "0 14px", height: 34, fontWeight: 700, fontSize: "0.78rem", cursor: "pointer" }}>
+                  Upload
+                </button>
+              </>
+            )}
+            <div className="user-chip">
+              <div className="user-avatar">{(user?.name || "U").slice(0, 1).toUpperCase()}</div>
+              <div className="user-chip-info">
+                <div className="user-chip-name">{user?.name || "Listener"}</div>
+                <div className="user-chip-plan">{user?.plan || "Premium"}</div>
+              </div>
+            </div>
+          </div>
+        </header>
 
         {scrapeMessage && (
-          <div className="scrape-banner" style={{ background: "rgba(255, 255, 255, 0.1)", border: "1px solid var(--line)", padding: "10px", borderRadius: "10px", textAlign: "center", fontSize: "0.85rem", marginTop: "4px" }}>
+          <div style={{ background: "var(--accent-soft)", borderBottom: "1px solid rgba(34,197,94,0.2)", padding: "8px 28px", fontSize: "0.8rem", color: "var(--accent-dark)" }}>
             {scrapeMessage}
           </div>
         )}
 
+        {/* Page body */}
+        <div className="page-body">
 
-        <div className="album-art" aria-hidden="true">
-          <span>{activeTrack.title.slice(0, 1)}</span>
-          <div className={isPlaying ? "vinyl spinning" : "vinyl"} />
-        </div>
+          {/* ── Content scroll ── */}
+          <div className="content-scroll">
 
-        <div className="track-heading">
-          <p>
-            {activeTrack.mood}
-            <span className="cc-badge" style={{ marginLeft: "8px" }} title="Creative Commons royalty free audio">CC</span>
-          </p>
-          <h2>{activeTrack.title}</h2>
-          <span>{activeTrack.artist}</span>
-        </div>
+            {/* Charts row — only on home with no search */}
+            {activeView === "all" && !query.trim() && tracks.length > 0 && (
+              <>
+                <div className="section-head">
+                  <h2>Charts: Top 50</h2>
+                </div>
+                <div className="charts-row">
+                  {recommendedTracks.map((track) => {
+                    const idx = tracks.findIndex((t) => t.id === track.id);
+                    return (
+                      <div key={`chart-${track.id}`} className="chart-card" onClick={() => playTrack(idx)}>
+                        <div className="chart-thumb" style={{ background: track.coverUrl ? "none" : `linear-gradient(135deg, ${track.color || "#22c55e"}, #1a2035)`, position: "relative", overflow: "hidden" }}>
+                          {track.coverUrl ? (
+                            <img src={track.coverUrl} alt={track.title} style={{ width: "100%", height: "100%", objectFit: "cover", position: "absolute", top: 0, left: 0 }} />
+                          ) : (
+                            <span style={{ color: "rgba(255,255,255,0.85)", fontSize: "2.2rem", fontWeight: 900 }}>{track.title.slice(0, 1)}</span>
+                          )}
+                        </div>
+                        <div className="chart-card-title">{track.mood || track.title}</div>
+                        <div className="chart-card-sub">Top 50</div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="section-head" style={{ marginTop: 28 }}>
+                  <h2>Listening History</h2>
+                  <button className="see-all-btn" type="button">See All</button>
+                </div>
+              </>
+            )}
 
-        <div className="quick-actions">
-          <button
-            className={library.liked.includes(activeTrack.id) ? "pill-button active" : "pill-button"}
-            type="button"
-            onClick={() => toggleArrayItem("liked", activeTrack.id)}
-          >
-            <Heart size={16} fill="currentColor" />
-            Like
-          </button>
-          <button
-            className={library.wishlist.includes(activeTrack.id) ? "pill-button active" : "pill-button"}
-            type="button"
-            onClick={() => toggleArrayItem("wishlist", activeTrack.id)}
-          >
-            <Star size={16} fill="currentColor" />
-            Wishlist
-          </button>
-          <button
-            className="pill-button"
-            type="button"
-            onClick={() => addToPlaylist(selectedPlaylistId, activeTrack.id)}
-          >
-            <Plus size={16} />
-            Playlist
-          </button>
-          <button
-            className="pill-button"
-            type="button"
-            onClick={() => addToQueue(activeTrack.id)}
-          >
-            <ListOrdered size={16} />
-            + Queue
-          </button>
-        </div>
+            {/* Tabs */}
+            <div className="library-tabs">
+              <button className={activeView === "all" ? "tab-button active" : "tab-button"} type="button" onClick={() => { setActiveView("all"); setSelectedAlbum(null); }}>All songs</button>
+              <button className={activeView === "albums" ? "tab-button active" : "tab-button"} type="button" onClick={() => { setActiveView("albums"); setSelectedAlbum(null); }}>Albums</button>
+              <button className={activeView === "liked" ? "tab-button active" : "tab-button"} type="button" onClick={() => { setActiveView("liked"); setSelectedAlbum(null); }}>Liked {library.liked.length}</button>
+              <button className={activeView === "wishlist" ? "tab-button active" : "tab-button"} type="button" onClick={() => { setActiveView("wishlist"); setSelectedAlbum(null); }}>Wishlist {library.wishlist.length}</button>
+              <button className={activeView === "playlist" ? "tab-button active" : "tab-button"} type="button" onClick={() => { setActiveView("playlist"); setSelectedAlbum(null); }}>Playlist</button>
+              <button className={activeView === "queue" ? "tab-button active" : "tab-button"} type="button" onClick={() => { setActiveView("queue"); setSelectedAlbum(null); }}>Queue ({queue.length})</button>
+            </div>
 
-        {/* Optimized Progress Bar */}
-        <TrackProgressBar audioRef={audioRef} />
+            {/* Playlist bar */}
+            <div className="playlist-bar">
+              <div style={{ display: "flex", gap: 8 }}>
+                <Dropdown
+                  value={selectedPlaylistId}
+                  onChange={(e) => { setSelectedPlaylistId(e.target.value); setActiveView("playlist"); }}
+                  options={library.playlists.map((p) => ({ value: p.id, label: `${p.name} (${p.trackIds.length})` }))}
+                  style={{ flex: 1 }}
+                />
+                {selectedPlaylistId !== "pl_favorites" && (
+                  <button type="button" onClick={() => deletePlaylist(selectedPlaylistId)} aria-label="Delete playlist"
+                    style={{ background: "rgba(239,68,68,0.1)", border: "1px solid var(--danger)", color: "var(--danger)", borderRadius: "var(--radius-sm)", padding: "0 12px", cursor: "pointer", display: "flex", alignItems: "center" }}>
+                    <Trash2 size={15} />
+                  </button>
+                )}
+              </div>
+              <form onSubmit={createPlaylist} className="playlist-form">
+                <input value={newPlaylistName} onChange={(e) => setNewPlaylistName(e.target.value)} placeholder="New playlist" />
+                <button type="submit" aria-label="Create playlist"><Plus size={16} /></button>
+              </form>
+            </div>
 
-        <div className="controls">
-          <button
-            className={isShuffle ? "icon-button active" : "icon-button"}
-            type="button"
-            aria-label="Toggle shuffle"
-            onClick={() => setIsShuffle((current) => !current)}
-          >
-            <Shuffle size={19} />
-          </button>
-          <button className="icon-button" type="button" aria-label="Previous track" onClick={previousTrack}>
-            <SkipBack size={22} />
-          </button>
-          <button className="play-button" type="button" aria-label="Play or pause" onClick={togglePlay}>
-            {isPlaying ? <Pause size={28} fill="currentColor" /> : <Play size={28} fill="currentColor" />}
-          </button>
-          <button className="icon-button" type="button" aria-label="Next track" onClick={nextTrack}>
-            <SkipForward size={22} />
-          </button>
-          <button
-            className={isRepeat ? "icon-button active" : "icon-button"}
-            type="button"
-            aria-label="Toggle repeat"
-            onClick={() => setIsRepeat((current) => !current)}
-          >
-            <Repeat size={19} />
-          </button>
-        </div>
+            {/* Premium strip */}
+            <div className="premium-strip">
+              <div>
+                <strong>{library.settings.offlineMode ? "Offline-ready session" : "Premium session"}</strong>
+                <span>{user?.name || "Listener"} — liked, wishlist, playlists saved on device.</span>
+              </div>
+              {library.settings.offlineMode ? <Download size={18} /> : <ListMusic size={18} />}
+            </div>
 
-        <label className="volume-control">
-          <Volume2 size={18} aria-hidden="true" />
-          <input
-            aria-label="Volume"
-            type="range"
-            min="0"
-            max="1"
-            step="0.01"
-            value={volume}
-            onChange={(event) => setVolume(Number(event.target.value))}
-          />
-        </label>
-      </section>
+            {/* Recommended + Trending grids */}
+            {activeView === "all" && !query.trim() && tracks.length > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 24, marginBottom: 24 }}>
+                <div>
+                  <h3 style={{ fontSize: "0.9rem", fontWeight: 800, marginBottom: 12 }}>Recommended for You</h3>
+                  <div className="spotify-grid">
+                    {recommendedTracks.map((track) => {
+                      const idx = tracks.findIndex((t) => t.id === track.id);
+                      return <TrackCard key={`rec-${track.id}`} track={track} onPlay={() => playTrack(idx)} />;
+                    })}
+                  </div>
+                </div>
+                <div>
+                  <h3 style={{ fontSize: "0.9rem", fontWeight: 800, marginBottom: 12 }}>Trending Now</h3>
+                  <div className="spotify-grid">
+                    {trendingTracks.map((track) => {
+                      const idx = tracks.findIndex((t) => t.id === track.id);
+                      return <TrackCard key={`trend-${track.id}`} track={track} onPlay={() => playTrack(idx)} />;
+                    })}
+                  </div>
+                </div>
+                <h3 style={{ fontSize: "0.9rem", fontWeight: 800 }}>All Songs</h3>
+              </div>
+            )}
 
-      <section className="library-panel">
-        <div className="library-header">
-          <div>
-            <p className="eyebrow">No ads / High quality / Unlimited skips</p>
-            <h2>Your Premium Library</h2>
+            {activeView === "queue" && queue.length === 0 && (
+              <div style={{ padding: "40px 0", textAlign: "center", color: "var(--muted)" }}>No tracks in queue. Add some from the track options!</div>
+            )}
+
+            {/* Albums grid */}
+            {activeView === "albums" && !selectedAlbum && (
+              <div>
+                <div className="section-head" style={{ marginBottom: 16 }}>
+                  <h2>Albums <span style={{ color: "var(--muted)", fontWeight: 500, fontSize: "0.85rem" }}>({albumGroups.length})</span></h2>
+                </div>
+                <div className="spotify-grid">
+                  {albumGroups.map((album) => (
+                    <div key={album.name} className="spotify-card album-card" onClick={() => setSelectedAlbum(album.name)}>
+                      <div className="card-image-wrap" style={{ background: album.coverUrl ? "none" : `linear-gradient(135deg, ${album.color || "#6d5dfc"}, #1f2937)`, position: "relative", overflow: "hidden" }}>
+                        {album.coverUrl ? (
+                          <img src={album.coverUrl} alt={album.name} style={{ width: "100%", height: "100%", objectFit: "cover", position: "absolute", top: 0, left: 0, borderRadius: "inherit" }} />
+                        ) : (
+                          <span className="card-thumb-char">{album.name.slice(0, 1)}</span>
+                        )}
+                        <button className="spotify-play-btn" type="button" aria-label="Open album">
+                          <Disc size={18} />
+                        </button>
+                      </div>
+                      <div className="card-info">
+                        <strong className="card-title">{album.name}</strong>
+                        <span className="card-artist">{album.artist} · {album.tracks.length} songs</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Album detail — track list */}
+            {activeView === "albums" && selectedAlbum && (
+              <div>
+                <div className="album-detail-header">
+                  <button className="album-back-btn" type="button" onClick={() => setSelectedAlbum(null)}>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6" /></svg>
+                    All Albums
+                  </button>
+                  <div className="album-detail-info">
+                    {(() => {
+                      const ag = albumGroups.find((a) => a.name === selectedAlbum);
+                      return (
+                        <>
+                          <div className="album-detail-art" style={{ background: ag?.coverUrl ? "none" : `linear-gradient(135deg, ${ag?.color || "#6d5dfc"}, #1f2937)` }}>
+                            {ag?.coverUrl ? (
+                              <img src={ag.coverUrl} alt={ag.name} style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: "inherit" }} />
+                            ) : (
+                              <span style={{ color: "#fff", fontSize: "2.5rem", fontWeight: 900 }}>{selectedAlbum.slice(0, 1)}</span>
+                            )}
+                          </div>
+                          <div>
+                            <p style={{ color: "var(--muted)", fontSize: "0.72rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>Album</p>
+                            <h2 style={{ fontSize: "1.4rem", fontWeight: 900, margin: 0 }}>{selectedAlbum}</h2>
+                            <p style={{ color: "var(--muted)", fontSize: "0.82rem", marginTop: 4 }}>{ag?.artist} · {ag?.tracks.length} songs</p>
+                            <button className="album-play-all-btn" type="button" onClick={() => {
+                              const first = ag?.tracks[0];
+                              if (first) { const idx = tracks.findIndex((t) => t.id === first.id); playTrack(idx); }
+                            }}>
+                              <Play size={14} fill="currentColor" /> Play All
+                            </button>
+                          </div>
+                        </>
+                      );
+                    })()}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Track rows */}
+            <div className={library.settings.compactRows ? "track-list compact" : "track-list"}>
+              {visibleTracks.map((track) => {
+                const originalIndex = tracks.findIndex((item) => item.id === track.id);
+                const isActive = track.id === activeTrack.id;
+                return (
+                  <TrackRow
+                    key={track.id}
+                    track={track}
+                    originalIndex={originalIndex}
+                    isActive={isActive}
+                    isPlaying={isPlaying}
+                    playTrack={playTrack}
+                    togglePlay={togglePlay}
+                    isLiked={library.liked.includes(track.id)}
+                    isWishlisted={library.wishlist.includes(track.id)}
+                    toggleArrayItem={toggleArrayItem}
+                    selectedPlaylistId={selectedPlaylistId}
+                    addToPlaylist={addToPlaylist}
+                    addToQueue={addToQueue}
+                    activeView={activeView}
+                    removeFromQueue={removeFromQueue}
+                    removeFromPlaylist={removeFromPlaylist}
+                  />
+                );
+              })}
+            </div>
           </div>
-          <label className="search-box">
-            <Search size={18} aria-hidden="true" />
-            <input
-              type="search"
-              placeholder="Search songs"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-            />
-          </label>
-        </div>
 
-        <div className="library-tabs">
-          <button className={activeView === "all" ? "tab-button active" : "tab-button"} type="button" onClick={() => setActiveView("all")}>
-            All songs
-          </button>
-          <button className={activeView === "liked" ? "tab-button active" : "tab-button"} type="button" onClick={() => setActiveView("liked")}>
-            Liked {likedCount}
-          </button>
-          <button className={activeView === "wishlist" ? "tab-button active" : "tab-button"} type="button" onClick={() => setActiveView("wishlist")}>
-            Wishlist {wishlistCount}
-          </button>
-          <button className={activeView === "playlist" ? "tab-button active" : "tab-button"} type="button" onClick={() => setActiveView("playlist")}>
-            Playlist
-          </button>
-          <button className={activeView === "queue" ? "tab-button active" : "tab-button"} type="button" onClick={() => setActiveView("queue")}>
-            Queue ({queue.length})
-          </button>
-        </div>
+          {/* ── Now Playing Panel ── */}
+          <aside className="now-playing-panel">
+            <div className="now-playing-art" style={{ background: activeTrack.coverUrl ? "none" : `linear-gradient(135deg, ${activeTrack.color || "#22c55e"}, #1a2035)`, position: "relative", overflow: "hidden" }}>
+              {activeTrack.coverUrl ? (
+                <>
+                  <img src={activeTrack.coverUrl} alt={activeTrack.title} style={{ width: "100%", height: "100%", objectFit: "cover", position: "absolute", top: 0, left: 0, borderRadius: "inherit" }} />
+                  <div className={isPlaying ? "vinyl spinning" : "vinyl"} style={{ opacity: 0.85 }} />
+                </>
+              ) : (
+                <>
+                  <span>{activeTrack.title.slice(0, 1)}</span>
+                  <div className={isPlaying ? "vinyl spinning" : "vinyl"} />
+                </>
+              )}
+            </div>
 
-        <div className="playlist-bar">
-          <div style={{ display: "flex", gap: "8px", width: "100%" }}>
-            <select
-              aria-label="Select playlist"
-              value={selectedPlaylistId}
-              onChange={(event) => {
-                setSelectedPlaylistId(event.target.value);
-                setActiveView("playlist");
-              }}
-              style={{ flex: 1 }}
-            >
-              {library.playlists.map((playlist) => (
-                <option key={playlist.id} value={playlist.id}>
-                  {playlist.name} ({playlist.trackIds.length})
-                </option>
-              ))}
-            </select>
-            {selectedPlaylistId !== "pl_favorites" && (
-              <button
-                type="button"
-                onClick={() => deletePlaylist(selectedPlaylistId)}
-                aria-label="Delete playlist"
-                className="playlist-delete-btn"
-                style={{
-                  background: "rgba(255, 107, 107, 0.15)",
-                  border: "1px solid var(--danger)",
-                  color: "var(--danger)",
-                  borderRadius: "18px",
-                  padding: "0 15px",
-                  cursor: "pointer",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center"
-                }}
-              >
-                <Trash2 size={18} />
+            <div className="now-playing-title">
+              {activeTrack.title}
+              {useEqualizer && (
+                <span className="eq-badge-active" title="Equalizer Enabled" style={{ marginLeft: "8px", verticalAlign: "middle" }}>
+                  <SlidersHorizontal size={12} style={{ display: "inline-block", color: "var(--accent)" }} />
+                </span>
+              )}
+            </div>
+            <div className="now-playing-artist">
+              {activeTrack.artist} · <span style={{ color: "var(--accent)" }}>{activeTrack.mood}</span>
+              <span style={{ marginLeft: "8px" }}><CreativeCommonsBadge /></span>
+            </div>
+
+            <TrackProgressBar audioRef={audioRef} activeTrackUrl={activeTrack.audioUrl} useEqualizer={useEqualizer} />
+
+            <div className="controls">
+              <button className={isShuffle ? "icon-button active" : "icon-button"} type="button" aria-label="Shuffle" onClick={() => setIsShuffle((v) => !v)}><Shuffle size={15} /></button>
+              <button className="icon-button" type="button" aria-label="Previous" onClick={previousTrack}><SkipBack size={17} /></button>
+              <button className="play-button" type="button" aria-label="Play/Pause" onClick={togglePlay}>
+                {isPlaying ? <Pause size={22} fill="currentColor" /> : <Play size={22} fill="currentColor" />}
               </button>
+              <button className="icon-button" type="button" aria-label="Next" onClick={nextTrack}><SkipForward size={17} /></button>
+              <button className={isRepeat ? "icon-button active" : "icon-button"} type="button" aria-label="Repeat" onClick={() => setIsRepeat((v) => !v)}><Repeat size={15} /></button>
+            </div>
+
+            <label className="volume-control">
+              <Volume2 size={15} aria-hidden="true" />
+              <input aria-label="Volume" type="range" min="0" max="1" step="0.01" value={volume} onChange={(e) => setVolume(Number(e.target.value))} />
+            </label>
+
+            <div className="quick-actions" style={{ marginTop: 14 }}>
+              <button className={library.liked.includes(activeTrack.id) ? "pill-button active" : "pill-button"} type="button" onClick={() => toggleArrayItem("liked", activeTrack.id)}><Heart size={13} fill="currentColor" /> Like</button>
+              <button className={library.wishlist.includes(activeTrack.id) ? "pill-button active" : "pill-button"} type="button" onClick={() => toggleArrayItem("wishlist", activeTrack.id)}><Star size={13} fill="currentColor" /> Wishlist</button>
+              <button className="pill-button" type="button" onClick={() => addToPlaylist(selectedPlaylistId, activeTrack.id)}><Plus size={13} /> Playlist</button>
+              <button className="pill-button" type="button" onClick={() => addToQueue(activeTrack.id)}><ListOrdered size={13} /> Queue</button>
+            </div>
+          </aside>
+
+        </div>{/* end page-body */}
+      </div>{/* end main-content */}
+
+      {/* ── Mobile Mini Player Bar ── */}
+      {activeTrack && (
+        <div className="mobile-mini-player" onClick={() => setIsMiniPlayerOpen(true)}>
+          <div className="mini-player-art" style={{ background: activeTrack.coverUrl ? "none" : `linear-gradient(135deg, ${activeTrack.color || "#22c55e"}, #1a2035)` }}>
+            {activeTrack.coverUrl ? (
+              <img src={activeTrack.coverUrl} alt={activeTrack.title} style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: "inherit" }} />
+            ) : (
+              <span style={{ color: "#fff", fontWeight: 900, fontSize: "1rem" }}>{activeTrack.title.slice(0, 1)}</span>
             )}
           </div>
-          <form onSubmit={createPlaylist} className="playlist-form">
-            <input
-              value={newPlaylistName}
-              onChange={(event) => setNewPlaylistName(event.target.value)}
-              placeholder="New playlist"
-            />
-            <button type="submit" aria-label="Create playlist">
-              <Plus size={18} />
-            </button>
-          </form>
-        </div>
-
-        <div className={library.settings.compactRows ? "track-list compact" : "track-list"}>
-          <div className="premium-strip">
-            <div>
-              <strong>{library.settings.offlineMode ? "Offline-ready session" : "Premium session"}</strong>
-              <span>{user?.name || "Listener"} is signed in. Liked songs, wishlist, playlists, and settings are saved on this device.</span>
-            </div>
-            {library.settings.offlineMode ? <Download size={22} aria-hidden="true" /> : <ListMusic size={22} aria-hidden="true" />}
+          <div className="mini-player-info">
+            <span className="mini-player-title">{activeTrack.title}</span>
+            <span className="mini-player-artist">{activeTrack.artist}</span>
           </div>
-
-          {activeView === "all" && !query.trim() && (
-            <div className="spotify-dashboard" style={{ display: "flex", flexDirection: "column", gap: "24px", marginBottom: "32px", padding: "10px 0" }}>
-              <div className="spotify-section">
-                <h3 className="section-title" style={{ fontSize: "1.2rem", fontWeight: "800", marginBottom: "12px", color: "var(--text)" }}>Recommended for You</h3>
-                <div className="spotify-grid">
-                  {recommendedTracks.map((track) => {
-                    const originalIndex = tracks.findIndex((item) => item.id === track.id);
-                    return (
-                      <TrackCard
-                        key={`rec-${track.id}`}
-                        track={track}
-                        onPlay={() => playTrack(originalIndex)}
-                      />
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div className="spotify-section">
-                <h3 className="section-title" style={{ fontSize: "1.2rem", fontWeight: "800", marginBottom: "12px", color: "var(--text)" }}>Trending Now</h3>
-                <div className="spotify-grid">
-                  {trendingTracks.map((track) => {
-                    const originalIndex = tracks.findIndex((item) => item.id === track.id);
-                    return (
-                      <TrackCard
-                        key={`trend-${track.id}`}
-                        track={track}
-                        onPlay={() => playTrack(originalIndex)}
-                      />
-                    );
-                  })}
-                </div>
-              </div>
-
-              <h3 className="section-title" style={{ fontSize: "1.2rem", fontWeight: "800", marginTop: "12px", color: "var(--text)" }}>All Songs</h3>
-            </div>
-          )}
-
-          {activeView === "queue" && queue.length === 0 && (
-            <div style={{ padding: "40px", textAlign: "center", color: "var(--muted)" }}>
-              No tracks in your play queue. Add some from the track options!
-            </div>
-          )}
-
-          {visibleTracks.map((track) => {
-            const originalIndex = tracks.findIndex((item) => item.id === track.id);
-            const isActive = track.id === activeTrack.id;
-
-            return (
-              <article className={isActive ? "track-row active" : "track-row"} key={track.id}>
-                <button className="track-main" type="button" onClick={() => playTrack(originalIndex)}>
-                  <span className="track-thumb" style={{ background: track.color }}>
-                    {track.title.slice(0, 1)}
-                  </span>
-                  <span className="track-meta" style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                    <div style={{ display: "flex", flexDirection: "column" }}>
-                      <strong style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                        {track.title}
-                        {isActive && isPlaying && (
-                          <div className="music-playing-waves">
-                            <span className="wave-bar"></span>
-                            <span className="wave-bar"></span>
-                            <span className="wave-bar"></span>
-                            <span className="wave-bar"></span>
-                          </div>
-                        )}
-                        <span className="cc-badge" title="No copyright / CC Creative Commons royalty free audio">CC</span>
-                      </strong>
-                      <small>{track.artist} / {track.album}</small>
-                    </div>
-                  </span>
-                  <span className="track-mood">{track.mood}</span>
-                  <span className="track-duration">{track.duration}</span>
-                </button>
-                <div className="row-actions">
-                  <button
-                    className="mini-action"
-                    type="button"
-                    aria-label={`Play ${track.title}`}
-                    onClick={() => playTrack(originalIndex)}
-                  >
-                    <Play size={16} />
-                  </button>
-                  <button
-                    className={library.liked.includes(track.id) ? "mini-action active" : "mini-action"}
-                    type="button"
-                    aria-label="Like song"
-                    onClick={() => toggleArrayItem("liked", track.id)}
-                  >
-                    <Heart size={16} fill="currentColor" />
-                  </button>
-                  <button
-                    className={library.wishlist.includes(track.id) ? "mini-action active" : "mini-action"}
-                    type="button"
-                    aria-label="Add to wishlist"
-                    onClick={() => toggleArrayItem("wishlist", track.id)}
-                  >
-                    <Star size={16} fill="currentColor" />
-                  </button>
-                  <button
-                    className="mini-action"
-                    type="button"
-                    aria-label="Add to selected playlist"
-                    onClick={() => addToPlaylist(selectedPlaylistId, track.id)}
-                  >
-                    <Plus size={16} />
-                  </button>
-                  <button
-                    className="mini-action"
-                    type="button"
-                    aria-label="Add to play queue"
-                    onClick={() => addToQueue(track.id)}
-                  >
-                    <ListOrdered size={16} />
-                  </button>
-                  {activeView === "queue" && (
-                    <button
-                      className="mini-action"
-                      type="button"
-                      aria-label="Remove from queue"
-                      onClick={() => removeFromQueue(track.id)}
-                      style={{ color: "var(--danger)" }}
-                    >
-                      <Trash2 size={16} />
-                    </button>
-                  )}
-                </div>
-              </article>
-            );
-          })}
+          <div className="mini-player-controls" onClick={(e) => e.stopPropagation()}>
+            <button className="mini-player-btn" type="button" aria-label="Previous" onClick={previousTrack}><SkipBack size={18} /></button>
+            <button className="mini-player-btn mini-player-play" type="button" aria-label="Play/Pause" onClick={togglePlay}>
+              {isPlaying ? <Pause size={20} fill="currentColor" /> : <Play size={20} fill="currentColor" />}
+            </button>
+            <button className="mini-player-btn" type="button" aria-label="Next" onClick={nextTrack}><SkipForward size={18} /></button>
+          </div>
         </div>
-      </section>
+      )}
 
-      {/* Upload Pop-up Modal */}
-      {isUploadOpen && (
-        <div className="upload-modal-overlay">
-          <div className="upload-modal-content dashboard-panel">
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div>
-                <p className="eyebrow">Admin Studio</p>
-                <h1 style={{ fontSize: "1.8rem", margin: 0 }}>Upload a New Track</h1>
-              </div>
-              <button
-                className="icon-button"
-                type="button"
-                onClick={() => {
-                  setIsUploadOpen(false);
-                  setUploadError("");
-                  setUploadMessage("");
-                }}
-              >
-                <X size={20} />
+      {/* ── Mobile Full-Screen Player ── */}
+      {isMiniPlayerOpen && activeTrack && (
+        <div className="mobile-fullplayer">
+          {/* Blurred background from album art */}
+          <div className="fullplayer-bg" style={{
+            background: activeTrack.coverUrl
+              ? `url(${activeTrack.coverUrl}) center/cover no-repeat`
+              : `linear-gradient(135deg, ${activeTrack.color || "#22c55e"}, #1a2035)`
+          }} />
+          <div className="fullplayer-overlay" />
+
+          <div className="fullplayer-inner">
+            {/* Header */}
+            <div className="fullplayer-header">
+              <button className="fullplayer-close" type="button" aria-label="Minimize" onClick={() => setIsMiniPlayerOpen(false)}>
+                <svg width="32" height="6" viewBox="0 0 32 6" fill="none"><rect width="32" height="6" rx="3" fill="currentColor" opacity="0.4" /></svg>
+              </button>
+              <span className="fullplayer-label">Now Playing</span>
+              <button className="fullplayer-more" type="button" aria-label="More options">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2" /><circle cx="12" cy="12" r="2" /><circle cx="19" cy="12" r="2" /></svg>
               </button>
             </div>
-            <p style={{ marginTop: "10px", fontSize: "0.9rem", color: "var(--muted)" }}>
-              Add new music using dropdown selection of existing entities to maintain data consistency.
+
+            {/* Album Art */}
+            <div className="fullplayer-art">
+              {activeTrack.coverUrl ? (
+                <img src={activeTrack.coverUrl} alt={activeTrack.title} style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: "inherit" }} />
+              ) : (
+                <span style={{ color: "rgba(255,255,255,0.9)", fontSize: "5rem", fontWeight: 900 }}>{activeTrack.title.slice(0, 1)}</span>
+              )}
+            </div>
+
+            {/* Track info + like */}
+            <div className="fullplayer-meta">
+              <div>
+                <div className="fullplayer-title">{activeTrack.title}</div>
+                <div className="fullplayer-artist">{activeTrack.artist}</div>
+              </div>
+              <button
+                className={library.liked.includes(activeTrack.id) ? "fullplayer-like active" : "fullplayer-like"}
+                type="button"
+                aria-label="Like"
+                onClick={() => toggleArrayItem("liked", activeTrack.id)}
+              >
+                <Heart size={22} fill={library.liked.includes(activeTrack.id) ? "currentColor" : "none"} />
+              </button>
+            </div>
+
+            {/* Progress */}
+            <TrackProgressBar audioRef={audioRef} activeTrackUrl={activeTrack.audioUrl} useEqualizer={useEqualizer} />
+
+            {/* Controls */}
+            <div className="fullplayer-controls">
+              <button className={isShuffle ? "fp-icon-btn active" : "fp-icon-btn"} type="button" aria-label="Shuffle" onClick={() => setIsShuffle((v) => !v)}><Shuffle size={18} /></button>
+              <button className="fp-icon-btn" type="button" aria-label="Previous" onClick={previousTrack}><SkipBack size={28} fill="currentColor" /></button>
+              <button className="fp-play-btn" type="button" aria-label="Play/Pause" onClick={togglePlay}>
+                {isPlaying ? <Pause size={28} fill="currentColor" /> : <Play size={28} fill="currentColor" style={{ marginLeft: 3 }} />}
+              </button>
+              <button className="fp-icon-btn" type="button" aria-label="Next" onClick={nextTrack}><SkipForward size={28} fill="currentColor" /></button>
+              <button className={isRepeat ? "fp-icon-btn active" : "fp-icon-btn"} type="button" aria-label="Repeat" onClick={() => setIsRepeat((v) => !v)}><Repeat size={18} /></button>
+            </div>
+
+            {/* Volume */}
+            <label className="fullplayer-volume">
+              <Volume2 size={14} style={{ color: "rgba(255,255,255,0.5)" }} />
+              <input aria-label="Volume" type="range" min="0" max="1" step="0.01" value={volume} onChange={(e) => setVolume(Number(e.target.value))} />
+              <Volume2 size={18} style={{ color: "rgba(255,255,255,0.8)" }} />
+            </label>
+          </div>
+        </div>
+      )}
+
+      {/* ── Confirmation Modal ── */}
+      {playlistToDelete && (
+        <div className="upload-modal-overlay" style={{ zIndex: 10000 }}>
+          <div className="upload-modal-content" style={{ maxWidth: 400, textAlign: "center", padding: "24px" }}>
+            <h2 style={{ fontSize: "1.25rem", fontWeight: 800, marginBottom: 10 }}>Delete Playlist</h2>
+            <p style={{ color: "var(--muted)", fontSize: "0.9rem", marginBottom: 24, lineHeight: 1.5 }}>
+              Are you sure you want to delete the playlist "{library.playlists.find((p) => p.id === playlistToDelete)?.name}"? This action cannot be undone.
             </p>
+            <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
+              <button type="button" className="pill-button" onClick={() => setPlaylistToDelete(null)} style={{ minWidth: 100 }}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="pill-button active"
+                onClick={confirmDeletePlaylist}
+                style={{ background: "var(--danger)", color: "#fff", borderColor: "var(--danger)", minWidth: 100 }}
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
-            <form onSubmit={handleUpload} className="dashboard-form" style={{ marginTop: "15px" }}>
-              <label>
-                <span>Song Title</span>
-                <input
-                  type="text"
-                  name="title"
-                  value={uploadForm.title}
-                  onChange={(e) => setUploadForm({ ...uploadForm, title: e.target.value })}
-                  placeholder="Midnight Escape"
-                  required
-                />
-              </label>
-
-              <label>
-                <span>Artist</span>
-                <select
-                  name="artist"
-                  value={uploadForm.artist}
-                  onChange={(e) => setUploadForm({ ...uploadForm, artist: e.target.value })}
-                  className="modal-select"
+      {/* ── Upload Modal ── */}
+      {isUploadOpen && (
+        <div className="upload-modal-overlay">
+          <div className="upload-modal-content">
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <div>
+                <p className="eyebrow">Admin Studio</p>
+                <h2 style={{ margin: 0, fontSize: "1.4rem" }}>Upload a New Track</h2>
+              </div>
+              <button className="icon-button" type="button" onClick={() => { setIsUploadOpen(false); setUploadError(""); setUploadMessage(""); }}>
+                <X size={18} />
+              </button>
+            </div>
+            <form onSubmit={handleUpload} className="dashboard-form">
+              {/* File Select / Card Toggle */}
+              {!selectedFile ? (
+                <div
+                  className={dragActive ? "drag-drop-zone drag-active" : "drag-drop-zone"}
+                  onDragEnter={handleDrag}
+                  onDragOver={handleDrag}
+                  onDragLeave={handleDrag}
+                  onDrop={handleDrop}
+                  onClick={() => fileInputRef.current?.click()}
                 >
-                  {artistOptions.map((a) => (
-                    <option key={a} value={a}>{a}</option>
-                  ))}
-                </select>
-              </label>
+                  <input
+                    key={fileInputKey}
+                    ref={fileInputRef}
+                    type="file"
+                    accept="audio/*"
+                    onChange={(e) => processSelectedFile(e.target.files?.[0])}
+                    style={{ display: "none" }}
+                  />
+                  <div className="drag-drop-icon-wrapper">
+                    <Upload size={20} />
+                  </div>
+                  <p className="drag-drop-text">Drag and drop files or</p>
+                  <button className="drag-drop-btn" type="button">Choose files to upload</button>
+                  <p className="drag-drop-subtext">Audio files (MP3, WAV, etc.) — Maximum size 16 MB</p>
+                </div>
+              ) : (
+                <div className="file-preview-box">
+                  <div className="file-preview-left">
+                    <div className="file-preview-icon">
+                      <FileAudio size={20} />
+                    </div>
+                    <div className="file-preview-details">
+                      <p className="file-preview-name">{selectedFile.name}</p>
+                      <p className="file-preview-size">{formatFileSize(selectedFile.size)}</p>
+                    </div>
+                  </div>
+                  <button className="file-preview-remove" type="button" onClick={removeSelectedFile}>
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+              )}
 
-              <label>
-                <span>Album</span>
-                <select
-                  name="album"
-                  value={uploadForm.album}
-                  onChange={(e) => setUploadForm({ ...uploadForm, album: e.target.value })}
-                  className="modal-select"
+              {/* Navigation Tabs */}
+              <div className="upload-tabs">
+                <button
+                  type="button"
+                  className={activeUploadTab === "details" ? "upload-tab active" : "upload-tab"}
+                  onClick={() => setActiveUploadTab("details")}
                 >
-                  {albumOptions.map((a) => (
-                    <option key={a} value={a}>{a}</option>
-                  ))}
-                </select>
-              </label>
-
-              <label>
-                <span>Mood / Genre</span>
-                <select
-                  name="mood"
-                  value={uploadForm.mood}
-                  onChange={(e) => setUploadForm({ ...uploadForm, mood: e.target.value })}
-                  className="modal-select"
-                >
-                  {moodOptions.map((m) => (
-                    <option key={m} value={m}>{m}</option>
-                  ))}
-                </select>
-              </label>
-
-              <label>
-                <span>Audio Track (Pre-populated option)</span>
-                <select
-                  name="audioUrl"
-                  value={uploadForm.audioUrl}
-                  onChange={(e) => setUploadForm({ ...uploadForm, audioUrl: e.target.value })}
-                  className="modal-select"
-                >
-                  {audioOptions.map((url, i) => (
-                    <option key={url} value={url}>SoundHelix Song {i + 1}</option>
-                  ))}
-                </select>
-              </label>
-
-              <label>
-                <span>Accent Color</span>
-                <input
-                  type="color"
-                  name="color"
-                  value={uploadForm.color}
-                  onChange={(e) => setUploadForm({ ...uploadForm, color: e.target.value })}
-                />
-              </label>
-
-              <label>
-                <span>Duration</span>
-                <input
-                  type="text"
-                  name="duration"
-                  value={uploadForm.duration}
-                  onChange={(e) => setUploadForm({ ...uploadForm, duration: e.target.value })}
-                  required
-                />
-              </label>
-
-              {uploadMessage && <p style={{ color: "var(--green)", fontWeight: "bold" }}>{uploadMessage}</p>}
-              {uploadError && <p style={{ color: "var(--danger)", fontWeight: "bold" }}>{uploadError}</p>}
-
-              <div className="dashboard-actions">
-                <button type="submit" disabled={isUploading}>
-                  {isUploading ? "Uploading..." : "Upload song"}
+                  File Settings
                 </button>
                 <button
                   type="button"
-                  className="link-button"
-                  onClick={() => {
-                    setIsUploadOpen(false);
-                    setUploadError("");
-                    setUploadMessage("");
-                  }}
+                  className={activeUploadTab === "settings" ? "upload-tab active" : "upload-tab"}
+                  onClick={() => setActiveUploadTab("settings")}
                 >
-                  Close
+                  Widget Options
                 </button>
               </div>
+
+              {/* Tab Panels */}
+              {activeUploadTab === "details" ? (
+                <div style={{ display: "grid", gap: "12px" }}>
+                  <label><span>Song Title</span><input type="text" value={uploadForm.title} onChange={(e) => setUploadForm({ ...uploadForm, title: e.target.value })} placeholder="Midnight Escape" required /></label>
+                  <label><span>Artist</span>
+                    <Dropdown
+                      value={uploadForm.artist}
+                      onChange={(e) => setUploadForm({ ...uploadForm, artist: e.target.value })}
+                      options={artistOptions.map((a) => ({ value: a, label: a }))}
+                      className="modal-select"
+                    />
+                  </label>
+                  <label><span>Album</span>
+                    <Dropdown
+                      value={uploadForm.album}
+                      onChange={(e) => setUploadForm({ ...uploadForm, album: e.target.value })}
+                      options={albumOptions.map((a) => ({ value: a, label: a }))}
+                      className="modal-select"
+                    />
+                  </label>
+                  <label><span>Mood / Genre</span>
+                    <Dropdown
+                      value={uploadForm.mood}
+                      onChange={(e) => setUploadForm({ ...uploadForm, mood: e.target.value })}
+                      options={moodOptions.map((m) => ({ value: m, label: m }))}
+                      className="modal-select"
+                    />
+                  </label>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+                    <label><span>Accent Color</span><input type="color" value={uploadForm.color} onChange={(e) => setUploadForm({ ...uploadForm, color: e.target.value })} style={{ width: "100%", padding: 0, height: "44px", cursor: "pointer" }} /></label>
+                    <label><span>Duration</span><input type="text" value={uploadForm.duration} onChange={(e) => setUploadForm({ ...uploadForm, duration: e.target.value })} required /></label>
+                  </div>
+                </div>
+              ) : (
+                <div className="upload-toggle-list">
+                  <div className="upload-toggle-row">
+                    <div className="upload-toggle-left">
+                      <div className="upload-toggle-icon">
+                        <Sparkles size={16} />
+                      </div>
+                      <div className="upload-toggle-info">
+                        <span className="upload-toggle-title">Presentation Mode</span>
+                        <span className="upload-toggle-desc">Enable high fidelity 320kbps format stream</span>
+                      </div>
+                    </div>
+                    <label className="upload-switch">
+                      <input type="checkbox" checked={uploadHQ} onChange={(e) => setUploadHQ(e.target.checked)} />
+                      <span className="upload-slider" />
+                    </label>
+                  </div>
+
+                  <div className="upload-toggle-row">
+                    <div className="upload-toggle-left">
+                      <div className="upload-toggle-icon">
+                        <Lock size={16} />
+                      </div>
+                      <div className="upload-toggle-info">
+                        <span className="upload-toggle-title">Password Protect</span>
+                        <span className="upload-toggle-desc">Require login/key authorization to stream</span>
+                      </div>
+                    </div>
+                    <label className="upload-switch">
+                      <input type="checkbox" checked={!uploadPublic} onChange={(e) => setUploadPublic(!e.target.checked)} />
+                      <span className="upload-slider" />
+                    </label>
+                  </div>
+
+                  <div className="upload-toggle-row">
+                    <div className="upload-toggle-left">
+                      <div className="upload-toggle-icon">
+                        <EyeOff size={16} />
+                      </div>
+                      <div className="upload-toggle-info">
+                        <span className="upload-toggle-title">Offline Cache</span>
+                        <span className="upload-toggle-desc">Precache track in client indexedDB store</span>
+                      </div>
+                    </div>
+                    <label className="upload-switch">
+                      <input type="checkbox" checked={uploadCache} onChange={(e) => setUploadCache(e.target.checked)} />
+                      <span className="upload-slider" />
+                    </label>
+                  </div>
+                </div>
+              )}
+
+              {uploadMessage && <p style={{ color: "var(--accent)", fontWeight: 700, margin: "8px 0 0 0" }}>{uploadMessage}</p>}
+              {uploadError && <p style={{ color: "var(--danger)", fontWeight: 700, margin: "8px 0 0 0" }}>{uploadError}</p>}
+
+              <button type="submit" disabled={isUploading} className="launch-button">
+                {isUploading ? "Uploading…" : "Launch it →"}
+              </button>
             </form>
           </div>
         </div>
       )}
 
+      {/* ── Settings Drawer ── */}
       <aside className={isSettingsOpen ? "settings-drawer open" : "settings-drawer"} aria-hidden={!isSettingsOpen}>
         <div className="settings-head">
           <div>
             <p className="eyebrow">Playback Settings</p>
             <h2>Control Center</h2>
           </div>
-          <button className="icon-button" type="button" aria-label="Close settings" onClick={() => setIsSettingsOpen(false)}>
-            <X size={20} />
-          </button>
+          <button className="icon-button" type="button" aria-label="Close settings" onClick={() => setIsSettingsOpen(false)}><X size={18} /></button>
         </div>
 
-        {/* Audio Equalizer */}
-        <div className="setting-row" style={{ display: "grid", gap: "10px" }}>
-          <span style={{ display: "flex", gap: "10px", alignItems: "center" }}>
-            <Radio size={18} />
-            Equalizer Preset
-          </span>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginTop: "5px" }}>
+        <div className="setting-row" style={{ display: "grid", gap: 10 }}>
+          <span style={{ display: "flex", gap: 8, alignItems: "center" }}><Radio size={16} /> Equalizer Preset</span>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
             {["flat", "bass-boost", "vocal-boost", "treble-boost", "electronic"].map((preset) => (
-              <button
-                key={preset}
-                type="button"
-                onClick={() => applyEqPreset(preset)}
-                className={`preset-btn ${eqPreset === preset ? "active" : ""}`}
-                style={{
-                  padding: "6px 12px",
-                  fontSize: "0.8rem",
-                  borderRadius: "12px",
-                  border: "1px solid var(--line)",
-                  background: eqPreset === preset ? "var(--green)" : "transparent",
-                  color: eqPreset === preset ? "#041008" : "var(--text)",
-                  cursor: "pointer",
-                  textTransform: "capitalize"
-                }}
-              >
+              <button key={preset} type="button" onClick={() => applyEqPreset(preset)}
+                style={{ padding: "5px 11px", fontSize: "0.76rem", borderRadius: 10, border: "1px solid var(--line)", background: eqPreset === preset ? "var(--accent)" : "transparent", color: eqPreset === preset ? "#fff" : "var(--text)", cursor: "pointer", textTransform: "capitalize" }}>
                 {preset.replace("-", " ")}
               </button>
             ))}
           </div>
         </div>
 
-        {/* Sleep Timer */}
-        <div className="setting-row" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <span style={{ display: "flex", gap: "10px", alignItems: "center" }}>
-            <Clock size={18} />
-            Sleep Timer
-          </span>
-          <select
-            value={sleepTimeLeft === null ? "off" : sleepTimeLeft}
-            onChange={(e) => {
-              const val = e.target.value;
-              if (val === "off") {
-                setSleepTimeLeft(null);
-              } else {
-                setSleepTimeLeft(Number(val));
-              }
-            }}
-            style={{
-              background: "rgba(255, 255, 255, 0.1)",
-              color: "var(--text)",
-              border: "1px solid var(--line)",
-              borderRadius: "12px",
-              padding: "6px",
-              outline: "none"
-            }}
-          >
-            <option value="off" style={{ color: "#111827" }}>Off</option>
-            <option value="300" style={{ color: "#111827" }}>5 Minutes</option>
-            <option value="900" style={{ color: "#111827" }}>15 Minutes</option>
-            <option value="1800" style={{ color: "#111827" }}>30 Minutes</option>
-            <option value="3600" style={{ color: "#111827" }}>60 Minutes</option>
-          </select>
+        <div className="setting-row" style={{ justifyContent: "space-between" }}>
+          <span style={{ display: "flex", gap: 8, alignItems: "center" }}><Clock size={16} /> Sleep Timer</span>
+          <Dropdown
+            value={sleepTimeLeft === null ? "off" : String(sleepTimeLeft)}
+            onChange={(e) => { const v = e.target.value; setSleepTimeLeft(v === "off" ? null : Number(v)); }}
+            options={[
+              { value: "off", label: "Off" },
+              { value: "300", label: "5 min" },
+              { value: "900", label: "15 min" },
+              { value: "1800", label: "30 min" },
+              { value: "3600", label: "60 min" }
+            ]}
+            style={{ width: "120px" }}
+          />
         </div>
-
         {sleepTimeLeft !== null && (
-          <div style={{ padding: "5px 16px", color: "var(--green)", fontSize: "0.85rem", fontWeight: "bold", textAlign: "right" }}>
-            Timer active: {formatTime(sleepTimeLeft)} left
-          </div>
+          <div style={{ color: "var(--accent)", fontSize: "0.8rem", fontWeight: 700, textAlign: "right" }}>Timer: {formatTime(sleepTimeLeft)} left</div>
         )}
 
-        <label className="setting-row">
-          <span>
-            <Download size={18} />
-            Offline mode
-          </span>
-          <button
-            className={library.settings.offlineMode ? "switch active" : "switch"}
-            type="button"
-            onClick={() => toggleSetting("offlineMode")}
-            aria-label="Toggle offline mode"
-          >
-            <span />
-          </button>
-        </label>
+        {[
+          ["offlineMode", <Download size={15} />, "Offline mode"],
+          ["highQuality", <Check size={15} />, "High quality audio"],
+          ["compactRows", <ListMusic size={15} />, "Compact rows"],
+          ["reduceMotion", <Moon size={15} />, "Reduce motion"],
+        ].map(([key, icon, label]) => (
+          <label key={key} className="setting-row">
+            <span>{icon} {label}</span>
+            <button className={library.settings[key] ? "switch active" : "switch"} type="button"
+              onClick={() => toggleSetting(key)} aria-label={`Toggle ${label}`}><span /></button>
+          </label>
+        ))}
 
         <label className="setting-row">
-          <span>
-            <Check size={18} />
-            High quality audio
-          </span>
-          <button
-            className={library.settings.highQuality ? "switch active" : "switch"}
-            type="button"
-            onClick={() => toggleSetting("highQuality")}
-            aria-label="Toggle high quality audio"
-          >
-            <span />
-          </button>
-        </label>
-
-        <label className="setting-row">
-          <span>
-            <ListMusic size={18} />
-            Compact rows
-          </span>
-          <button
-            className={library.settings.compactRows ? "switch active" : "switch"}
-            type="button"
-            onClick={() => toggleSetting("compactRows")}
-            aria-label="Toggle compact rows"
-          >
-            <span />
-          </button>
-        </label>
-
-        <label className="setting-row">
-          <span>
-            <Moon size={18} />
-            Reduce motion
-          </span>
-          <button
-            className={library.settings.reduceMotion ? "switch active" : "switch"}
-            type="button"
-            onClick={() => toggleSetting("reduceMotion")}
-            aria-label="Toggle reduced motion"
-          >
-            <span />
-          </button>
-        </label>
-
-        <label className="setting-row theme-row">
-          <span>
-            <Sun size={18} />
-            Theme mode
-          </span>
+          <span><Sun size={15} /> Theme</span>
           <div className="theme-switches">
-            <button
-              className={library.settings.theme === "dark" ? "theme-button active" : "theme-button"}
-              type="button"
-              onClick={() => updateSetting("theme", "dark")}
-            >
-              Dark
-            </button>
-            <button
-              className={library.settings.theme === "light" ? "theme-button active" : "theme-button"}
-              type="button"
-              onClick={() => updateSetting("theme", "light")}
-            >
-              Light
-            </button>
+            <button className={library.settings.theme === "light" ? "theme-button active" : "theme-button"} type="button" onClick={() => updateSetting("theme", "light")}>Light</button>
+            <button className={library.settings.theme === "dark" ? "theme-button active" : "theme-button"} type="button" onClick={() => updateSetting("theme", "dark")}>Dark</button>
           </div>
         </label>
 
         <label className="slider-setting">
-          <span>
-            <SlidersHorizontal size={18} />
-            Glass intensity
-          </span>
-          <input
-            type="range"
-            min="35"
-            max="95"
-            value={library.settings.glassIntensity}
-            onChange={(event) => updateSetting("glassIntensity", Number(event.target.value))}
-          />
+          <span><SlidersHorizontal size={15} /> Glass intensity</span>
+          <input type="range" min="35" max="95" value={library.settings.glassIntensity} onChange={(e) => updateSetting("glassIntensity", Number(e.target.value))} />
         </label>
       </aside>
-    </main>
+
+    </div>
   );
 }

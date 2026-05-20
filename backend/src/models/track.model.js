@@ -35,6 +35,10 @@ const trackSchema = new mongoose.Schema(
       type: String,
       required: true
     },
+    coverUrl: {
+      type: String,
+      default: ""
+    },
     plays: {
       type: Number,
       default: 0

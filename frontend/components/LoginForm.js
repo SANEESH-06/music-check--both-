@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { LockKeyhole, Mail, User as UserIcon } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { loginUser, registerUser } from "@/lib/api";
+import Dropdown from "@/components/ui/Dropdown";
 
 export default function LoginForm() {
   const router = useRouter();
@@ -121,10 +122,14 @@ export default function LoginForm() {
           <label>
             <span>Subscription Plan</span>
             <div className="input-wrap">
-              <select
+              <Dropdown
                 name="plan"
                 value={form.plan}
                 onChange={updateField}
+                options={[
+                  { value: "premium", label: "Premium Plan" },
+                  { value: "free", label: "Free Plan" }
+                ]}
                 style={{
                   background: "transparent",
                   border: 0,
@@ -132,10 +137,7 @@ export default function LoginForm() {
                   width: "100%",
                   outline: "none"
                 }}
-              >
-                <option value="premium" style={{ color: "#111827" }}>Premium Plan</option>
-                <option value="free" style={{ color: "#111827" }}>Free Plan</option>
-              </select>
+              />
             </div>
           </label>
         )}
