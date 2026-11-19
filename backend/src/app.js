@@ -19,8 +19,12 @@ export function buildApp() {
   ];
 
   app.register(helmet);
+  const allowedOrigins = env.nodeEnv === "production"
+    ? (env.clientUrl === "*" ? true : [env.clientUrl])
+    : devOrigins;
+
   app.register(cors, {
-    origin: env.nodeEnv === "development" ? devOrigins : env.clientUrl,
+    origin: allowedOrigins,
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"]
