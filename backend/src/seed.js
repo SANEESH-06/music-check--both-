@@ -19,18 +19,20 @@ export async function seedDatabase() {
     { upsert: true }
   );
 
-  // Clear existing tracks to avoid duplicate/stale sample tracks
-  await Track.deleteMany({});
-
-  await Promise.all(
-    tracks.map((track) => {
-      return Track.updateOne(
-        { title: track.title, artist: track.artist },
-        { $set: track },
-        { upsert: true }
-      );
-    })
-  );
-
-  console.log("Seed data ready");
+  // Only insert seed tracks that don't exist yet — never wipe user-uploaded tracks
+  const existing = await Track.countDocuments({});
+  if (existing === 0) {
+    await Promise.all(
+      tracks.map((track) => {
+        return Track.updateOne(
+          { title: track.title, artist: track.artist },
+          { $setOnInsert: track },
+          { upsert: true }
+        );
+      })
+    );
+    console.log("Seed data ready");
+  } else {
+    console.log(`Seed skipped — ${existing} track(s) already in DB`);
+  }
 }

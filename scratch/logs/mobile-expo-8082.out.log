@@ -1,0 +1,9 @@
+
+> echowave-mobile@1.0.0 start
+> expo start --port 8082 --host lan --clear
+
+Starting project at C:\Users\sanee\OneDrive\Desktop\music-check--both-\mobile
+Starting Metro Bundler
+warning: Bundler cache is empty, rebuilding (this may take a minute)
+Waiting on http://localhost:8082
+Logs for your project will appear below.

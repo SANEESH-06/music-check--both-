@@ -53,7 +53,13 @@ export default function LoginScreen() {
                 {/* Hero */}
                 <View style={s.hero}>
                     <View style={s.heroIcon}>
-                        <Ionicons name="headset" size={36} color={colors.accent} />
+                        {/* Glassmorphic soundwave sphere icon */}
+                        <View style={s.iconSphere}>
+                            {/* Inner waveform lines rendered as thin views */}
+                            {[12, 10, 8, 6, 4].map((h, i) => (
+                                <View key={i} style={[s.waveLine, { opacity: 0.2 + i * 0.18, height: h, marginVertical: 1.5 }]} />
+                            ))}
+                        </View>
                     </View>
                     <Text style={s.heroEyebrow}>EchoWave Premium</Text>
                     <Text style={s.heroTitle}>Sign in before{"\n"}the music starts.</Text>
@@ -133,7 +139,9 @@ const s = StyleSheet.create({
     shell: { flex: 1, backgroundColor: colors.bg },
     scroll: { flexGrow: 1, padding: 20 },
     hero: { alignItems: "center", paddingVertical: 40 },
-    heroIcon: { width: 72, height: 72, borderRadius: 36, backgroundColor: colors.accentSoft, alignItems: "center", justifyContent: "center", marginBottom: 16 },
+    heroIcon: { width: 80, height: 80, borderRadius: 40, backgroundColor: "#0d1f2d", borderWidth: 2, borderColor: colors.accent, alignItems: "center", justifyContent: "center", marginBottom: 16, shadowColor: colors.accent, shadowOpacity: 0.5, shadowRadius: 12, elevation: 8 },
+    iconSphere: { alignItems: "center", justifyContent: "center", width: 50, height: 50 },
+    waveLine: { width: 44, borderRadius: 4, backgroundColor: colors.accent },
     heroEyebrow: { color: colors.accent, fontSize: 11, fontWeight: "800", letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 8 },
     heroTitle: { fontSize: 28, fontWeight: "900", color: colors.text, textAlign: "center", lineHeight: 34, marginBottom: 10 },
     heroSub: { color: colors.muted, fontSize: 14, textAlign: "center", lineHeight: 20, maxWidth: 280 },

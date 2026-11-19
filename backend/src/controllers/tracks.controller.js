@@ -1,4 +1,17 @@
+import mongoose from "mongoose";
 import { Track } from "../models/track.model.js";
+
+function isAdminUser(user) {
+  return String(user?.email).toLowerCase() === "admin@example.com";
+}
+
+function normalizeTrackValue(value) {
+  return String(value ?? "").trim();
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 export async function listTracks(req, reply) {
   const search = req.query?.search?.trim();
@@ -18,7 +31,7 @@ export async function listTracks(req, reply) {
 
 export async function createTrack(req, reply) {
   const user = req.user;
-  const isAdmin = String(user?.email).toLowerCase() === "admin@example.com";
+  const isAdmin = isAdminUser(user);
 
   if (!isAdmin) {
     return reply.code(403).send({
@@ -26,11 +39,34 @@ export async function createTrack(req, reply) {
     });
   }
 
-  const { title, artist, album, duration, mood, color, audioUrl, coverUrl } = req.body ?? {};
+  const title = normalizeTrackValue(req.body?.title);
+  const artist = normalizeTrackValue(req.body?.artist);
+  const album = normalizeTrackValue(req.body?.album);
+  const duration = normalizeTrackValue(req.body?.duration);
+  const mood = normalizeTrackValue(req.body?.mood);
+  const color = normalizeTrackValue(req.body?.color);
+  const audioUrl = normalizeTrackValue(req.body?.audioUrl);
+  const coverUrl = normalizeTrackValue(req.body?.coverUrl);
 
   if (!title || !artist || !album || !duration || !mood || !color || !audioUrl) {
     return reply.code(400).send({
-      message: "All track fields are required."
+      message: "Please complete all required song fields."
+    });
+  }
+
+  const duplicate = await Track.findOne({
+    $or: [
+      {
+        title: new RegExp(`^${escapeRegExp(title)}$`, "i"),
+        artist: new RegExp(`^${escapeRegExp(artist)}$`, "i")
+      },
+      { audioUrl }
+    ]
+  }).select("_id title artist");
+
+  if (duplicate) {
+    return reply.code(409).send({
+      message: `Duplicate song blocked: "${duplicate.title}" by ${duplicate.artist} already exists.`
     });
   }
 
@@ -42,7 +78,7 @@ export async function createTrack(req, reply) {
     mood,
     color,
     audioUrl,
-    coverUrl: coverUrl || ""
+    coverUrl
   });
 
   return reply.code(201).send({
@@ -50,9 +86,130 @@ export async function createTrack(req, reply) {
   });
 }
 
+export async function deleteTrack(req, reply) {
+  const user = req.user;
+  const isAdmin = isAdminUser(user);
+
+  if (!isAdmin) {
+    return reply.code(403).send({
+      message: "Admin delete access is required."
+    });
+  }
+
+  const { id } = req.params ?? {};
+
+  if (!mongoose.isValidObjectId(id)) {
+    return reply.code(400).send({
+      message: "Invalid song id."
+    });
+  }
+
+  const track = await Track.findByIdAndDelete(id).lean();
+
+  if (!track) {
+    return reply.code(404).send({
+      message: "Song not found."
+    });
+  }
+
+  return reply.send({
+    message: `Deleted "${track.title}" from your app.`,
+    track
+  });
+}
+
+export async function deleteAllTracks(req, reply) {
+  const user = req.user;
+  const isAdmin = isAdminUser(user);
+
+  if (!isAdmin) {
+    return reply.code(403).send({
+      message: "Admin delete access is required."
+    });
+  }
+
+  if (req.body?.confirm !== "DELETE_ALL_TRACKS") {
+    return reply.code(400).send({
+      message: "Delete-all confirmation is required."
+    });
+  }
+
+  const result = await Track.deleteMany({});
+
+  return reply.send({
+    message: `Deleted ${result.deletedCount} song${result.deletedCount === 1 ? "" : "s"} from your app.`,
+    deletedCount: result.deletedCount
+  });
+}
+
+export async function incrementPlays(req, reply) {
+  const { id } = req.params ?? {};
+
+  if (!mongoose.isValidObjectId(id)) {
+    return reply.code(400).send({ message: "Invalid song id." });
+  }
+
+  const track = await Track.findByIdAndUpdate(
+    id,
+    { $inc: { plays: 1 } },
+    { new: true }
+  ).select("plays").lean();
+
+  if (!track) {
+    return reply.code(404).send({ message: "Song not found." });
+  }
+
+  return reply.send({ plays: track.plays });
+}
+
+export async function getRecommendations(req, reply) {
+  const { mood, artist, limit = 6 } = req.query ?? {};
+
+  const conditions = [];
+
+  if (mood) {
+    conditions.push({ mood: new RegExp(escapeRegExp(mood.trim()), "i") });
+  }
+
+  if (artist) {
+    conditions.push({ artist: new RegExp(escapeRegExp(artist.trim()), "i") });
+  }
+
+  let tracks = [];
+
+  if (conditions.length > 0) {
+    // Fetch mood + artist matches, exclude exact artist if we have mood results
+    tracks = await Track.find({ $or: conditions })
+      .select("title artist album duration mood color audioUrl plays coverUrl")
+      .sort({ plays: -1 })
+      .limit(Number(limit) * 3)
+      .lean();
+  }
+
+  // If not enough results, pad with popular tracks
+  if (tracks.length < Number(limit)) {
+    const existingIds = tracks.map((t) => t._id.toString());
+    const popular = await Track.find({ _id: { $nin: existingIds } })
+      .select("title artist album duration mood color audioUrl plays coverUrl")
+      .sort({ plays: -1 })
+      .limit(Number(limit) - tracks.length)
+      .lean();
+    tracks = [...tracks, ...popular];
+  }
+
+  // Shuffle for variety, then trim to limit
+  tracks = tracks
+    .map((t) => ({ t, sort: Math.random() }))
+    .sort((a, b) => a.sort - b.sort)
+    .map(({ t }) => t)
+    .slice(0, Number(limit));
+
+  return reply.send({ tracks });
+}
+
 export async function scrapeTracks(req, reply) {
   const user = req.user;
-  const isAdmin = String(user?.email).toLowerCase() === "admin@example.com";
+  const isAdmin = isAdminUser(user);
 
   if (!isAdmin) {
     return reply.code(403).send({
@@ -93,7 +250,7 @@ export async function scrapeTracks(req, reply) {
       const scraped = scrapedTracks[i];
       const title = scraped.name || `Scraped Song ${i + 1}`;
       const artist = scraped.artist || "Scraped Artist";
-      
+
       const existing = await Track.findOne({ title, artist });
       if (existing) {
         continue;

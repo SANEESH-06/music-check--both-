@@ -2,12 +2,13 @@ import { useEffect, useRef, useState, useMemo } from "react";
 import {
     View, Text, ScrollView, TouchableOpacity, TextInput,
     StyleSheet, ActivityIndicator, Modal, FlatList, Alert,
+    Linking, Platform,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Audio } from "expo-av";
+import { Audio } from "expo-audio";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import { getTracks, uploadTrack, scrapeTracks } from "../lib/api";
+import { getTracks, uploadTrack, deleteTrack, scrapeTracks } from "../lib/api";
 import { getItem, setItem, removeItem } from "../lib/storage";
 import { colors } from "../lib/theme";
 
@@ -23,6 +24,39 @@ function formatTime(secs) {
     const m = Math.floor(secs / 60);
     const s = Math.floor(secs % 60).toString().padStart(2, "0");
     return `${m}:${s}`;
+}
+
+function normalizeComparable(value) {
+    return String(value ?? "").trim().toLowerCase();
+}
+
+function cleanTrackPayload(form) {
+    return {
+        title: String(form.title ?? "").trim(),
+        artist: String(form.artist ?? "").trim(),
+        album: String(form.album ?? "").trim(),
+        duration: String(form.duration ?? "").trim(),
+        mood: String(form.mood ?? "").trim(),
+        color: String(form.color ?? "").trim(),
+        audioUrl: String(form.audioUrl ?? "").trim(),
+    };
+}
+
+function findDuplicateTrack(tracks, candidate) {
+    const title = normalizeComparable(candidate.title);
+    const artist = normalizeComparable(candidate.artist);
+    const audioUrl = normalizeComparable(candidate.audioUrl);
+
+    return tracks.find((track) => {
+        const sameTitleAndArtist = normalizeComparable(track.title) === title && normalizeComparable(track.artist) === artist;
+        const sameAudioUrl = audioUrl && normalizeComparable(track.audioUrl) === audioUrl;
+        return sameTitleAndArtist || sameAudioUrl;
+    });
+}
+
+function stopActionPress(event, action) {
+    event?.stopPropagation?.();
+    action?.();
 }
 
 export default function PlayerScreen() {
@@ -47,6 +81,11 @@ export default function PlayerScreen() {
     const [newPlaylistName, setNewPlaylistName] = useState("");
     const [showSettings, setShowSettings] = useState(false);
     const [showUpload, setShowUpload] = useState(false);
+    const [showYoutubeModal, setShowYoutubeModal] = useState(false);
+    const [showYoutubePlayer, setShowYoutubePlayer] = useState(false);
+    const [youtubeForm, setYoutubeForm] = useState({ title: "", artist: "YouTube", album: "YouTube", duration: "0:00", mood: "YouTube", color: "#ff0000", audioUrl: "" });
+    const [youtubeMessage, setYoutubeMessage] = useState("");
+    const [youtubeError, setYoutubeError] = useState("");
     const [showNowPlaying, setShowNowPlaying] = useState(false);
     const [isScraping, setIsScraping] = useState(false);
     const [scrapeMsg, setScrapeMsg] = useState("");
@@ -57,6 +96,28 @@ export default function PlayerScreen() {
 
     const activeTrack = tracks[activeIndex];
     const isAdmin = user?.email?.toLowerCase() === "admin@example.com";
+    const isWeb = Platform.OS === "web" && typeof window !== "undefined" && typeof window.Audio === "function";
+    const nativeAudioSupported = !isWeb && typeof Audio?.Sound?.createAsync === "function";
+    const audioSupported = isWeb || nativeAudioSupported;
+    const skipAutoPlayRef = useRef(false);
+    const webAudioRef = useRef(null);
+
+    const youTubeUrlPattern = /(?:youtube\.com\/watch\?v=|youtu\.be\/)/i;
+    const isYoutubeLink = (url) => typeof url === "string" && youTubeUrlPattern.test(url);
+    const getYoutubeVideoId = (url) => {
+        if (!isYoutubeLink(url)) return null;
+        const match = url.match(/(?:v=|youtu\.be\/)([A-Za-z0-9_-]{11})/);
+        return match ? match[1] : null;
+    };
+
+    const openExternalUrl = async (url) => {
+        if (!url) return;
+        try {
+            await Linking.openURL(url);
+        } catch (err) {
+            console.warn("Unable to open URL:", err);
+        }
+    };
 
     // ── Load user + tracks ──
     useEffect(() => {
@@ -85,34 +146,96 @@ export default function PlayerScreen() {
 
     // ── Audio setup ──
     useEffect(() => {
-        Audio.setAudioModeAsync({
-            allowsRecordingIOS: false,
-            staysActiveInBackground: true,
-            playsInSilentModeIOS: true,
-            shouldDuckAndroid: true,
-        });
-    }, []);
+        if (!nativeAudioSupported) {
+            return;
+        }
+
+        (async () => {
+            try {
+                await Audio.setAudioModeAsync({
+                    allowsRecording: false,
+                    shouldPlayInBackground: true,
+                    playsInSilentMode: true,
+                    interruptionMode: "duckOthers",
+                    shouldDuckAndroid: true,
+                });
+            } catch (error) {
+                console.warn("Audio mode setup failed:", error.message || error);
+            }
+        })();
+    }, [nativeAudioSupported]);
 
     // ── Load & play track ──
     useEffect(() => {
-        if (!activeTrack) return;
-        loadAndPlay(activeTrack.audioUrl);
-    }, [activeIndex, activeTrack?.audioUrl]);
+        if (!activeTrack || !audioSupported || isYoutubeLink(activeTrack.audioUrl)) return;
+        if (skipAutoPlayRef.current) {
+            skipAutoPlayRef.current = false;
+            return;
+        }
+        loadAndPlay(activeTrack.audioUrl, false);
+    }, [activeTrack?.audioUrl, audioSupported]);
 
     async function loadAndPlay(url, autoPlay = false) {
+        if (!audioSupported) {
+            console.warn("Audio playback is not supported on this platform.");
+            return;
+        }
+
+        if (isWeb) {
+            try {
+                if (webAudioRef.current) {
+                    webAudioRef.current.pause();
+                    webAudioRef.current.src = "";
+                    webAudioRef.current = null;
+                }
+
+                const audio = new window.Audio(url);
+                audio.volume = volume;
+                audio.onloadedmetadata = () => {
+                    setDuration(audio.duration || 0);
+                };
+                audio.ontimeupdate = () => {
+                    setPosition(audio.currentTime);
+                };
+                audio.onended = () => {
+                    setIsPlaying(false);
+                    if (isRepeat) {
+                        audio.currentTime = 0;
+                        audio.play().catch((err) => console.warn("Audio replay failed:", err));
+                    } else {
+                        nextTrack();
+                    }
+                };
+
+                webAudioRef.current = audio;
+                if (autoPlay) {
+                    await audio.play();
+                    setIsPlaying(true);
+                }
+            } catch (e) {
+                console.warn("Web audio load error:", e?.message || e);
+            }
+            return;
+        }
+
         try {
             if (soundRef.current) {
                 await soundRef.current.unloadAsync();
                 soundRef.current = null;
             }
-            const { sound } = await Audio.Sound.createAsync(
+            const createAsync = Audio?.Sound?.createAsync;
+            if (typeof createAsync !== "function") {
+                console.warn("Audio playback createAsync is not available.");
+                return;
+            }
+            const { sound } = await createAsync(
                 { uri: url },
                 { shouldPlay: autoPlay, volume },
                 onPlaybackStatus
             );
             soundRef.current = sound;
         } catch (e) {
-            console.warn("Audio load error:", e.message);
+            console.warn("Audio load error:", e?.message || e);
         }
     }
 
@@ -131,19 +254,43 @@ export default function PlayerScreen() {
     }
 
     async function playTrack(index) {
+        if (!audioSupported) {
+            console.warn("Audio playback is not supported on this platform.");
+            setActiveIndex(index);
+            return;
+        }
+
+        const track = tracks[index];
+        if (!track) return;
+        if (isYoutubeLink(track.audioUrl)) {
+            setActiveIndex(index);
+            setShowYoutubePlayer(true);
+            return;
+        }
+
         if (index === activeIndex) {
             togglePlay();
             return;
         }
+
+        skipAutoPlayRef.current = true;
         setActiveIndex(index);
-        // useEffect will reload; we want autoplay
+
+        if (isWeb) {
+            await loadAndPlay(track.audioUrl, true);
+            return;
+        }
+
         if (soundRef.current) {
             await soundRef.current.unloadAsync();
             soundRef.current = null;
         }
-        const track = tracks[index];
-        if (!track) return;
-        const { sound } = await Audio.Sound.createAsync(
+        const createAsync = Audio?.Sound?.createAsync;
+        if (typeof createAsync !== "function") {
+            console.warn("Audio playback createAsync is not available.");
+            return;
+        }
+        const { sound } = await createAsync(
             { uri: track.audioUrl },
             { shouldPlay: true, volume },
             onPlaybackStatus
@@ -152,6 +299,25 @@ export default function PlayerScreen() {
     }
 
     async function togglePlay() {
+        if (!audioSupported) return;
+        if (activeTrack && isYoutubeLink(activeTrack.audioUrl)) {
+            setShowYoutubePlayer(true);
+            return;
+        }
+
+        if (isWeb) {
+            const audio = webAudioRef.current;
+            if (!audio) return;
+            if (audio.paused) {
+                await audio.play().catch((err) => console.warn("Web audio play failed:", err));
+                setIsPlaying(true);
+            } else {
+                audio.pause();
+                setIsPlaying(false);
+            }
+            return;
+        }
+
         if (!soundRef.current) return;
         const status = await soundRef.current.getStatusAsync();
         if (!status.isLoaded) return;
@@ -186,15 +352,83 @@ export default function PlayerScreen() {
     }
 
     async function seek(secs) {
+        if (!audioSupported) return;
+        if (isWeb) {
+            if (webAudioRef.current) {
+                webAudioRef.current.currentTime = secs;
+            }
+            return;
+        }
         if (!soundRef.current) return;
         await soundRef.current.setPositionAsync(secs * 1000);
     }
 
     async function logout() {
-        if (soundRef.current) await soundRef.current.unloadAsync();
+        if (audioSupported) {
+            if (isWeb && webAudioRef.current) {
+                webAudioRef.current.pause();
+                webAudioRef.current.src = "";
+                webAudioRef.current = null;
+            }
+            if (soundRef.current) await soundRef.current.unloadAsync();
+        }
         await removeItem("auth_token");
         await removeItem("echowave_user");
         router.replace("/login");
+    }
+
+    async function handleYoutubeSave() {
+        setYoutubeError("");
+        setYoutubeMessage("");
+        const payload = cleanTrackPayload(youtubeForm);
+        const url = payload.audioUrl;
+        if (!url) {
+            setYoutubeError("Please paste a YouTube link.");
+            return;
+        }
+        if (!isYoutubeLink(url)) {
+            setYoutubeError("That doesn't look like a valid YouTube URL.");
+            return;
+        }
+        if (!youtubeForm.title.trim()) {
+            setYoutubeError("Please add the song title.");
+            return;
+        }
+        if (!youtubeForm.artist.trim()) {
+            setYoutubeError("Please add the artist name.");
+            return;
+        }
+        if (!isAdmin) {
+            setYoutubeError("Admin access is required to save YouTube links.");
+            return;
+        }
+
+        const duplicate = findDuplicateTrack(tracks, payload);
+
+        if (duplicate) {
+            setYoutubeError(`"${duplicate.title}" by ${duplicate.artist} is already in your library.`);
+            return;
+        }
+
+        try {
+            const token = await getItem("auth_token");
+            await uploadTrack(token, {
+                title: payload.title,
+                artist: payload.artist,
+                album: payload.album || "YouTube",
+                duration: payload.duration || "0:00",
+                mood: payload.mood || "YouTube",
+                color: payload.color || "#ff0000",
+                audioUrl: url,
+            });
+            const data = await getTracks(token);
+            setTracks(data);
+            setYoutubeMessage("YouTube link saved to your library.");
+            setYoutubeForm({ title: "", artist: "YouTube", album: "YouTube", duration: "0:00", mood: "YouTube", color: "#ff0000", audioUrl: "" });
+            setShowYoutubeModal(false);
+        } catch (err) {
+            setYoutubeError(err.message || "Failed to save YouTube link.");
+        }
     }
 
     // ── Library helpers ──
@@ -236,16 +470,113 @@ export default function PlayerScreen() {
 
     // ── Upload ──
     async function handleUpload() {
-        setUploadErr(""); setUploadMsg(""); setIsUploading(true);
+        const payload = cleanTrackPayload(uploadForm);
+        const missingField = ["title", "artist", "album", "duration", "mood", "color", "audioUrl"].find((field) => !payload[field]);
+
+        setUploadErr("");
+        setUploadMsg("");
+
+        if (missingField) {
+            setUploadErr("Please complete all required song fields.");
+            return;
+        }
+
+        const duplicate = findDuplicateTrack(tracks, payload);
+
+        if (duplicate) {
+            setUploadErr(`"${duplicate.title}" by ${duplicate.artist} is already in your library.`);
+            return;
+        }
+
+        setIsUploading(true);
         try {
             const token = await getItem("auth_token");
-            await uploadTrack(token, uploadForm);
+            await uploadTrack(token, payload);
             setUploadMsg("Uploaded!");
             setUploadForm((f) => ({ ...f, title: "" }));
             const data = await getTracks(token);
             setTracks(data);
         } catch (e) { setUploadErr(e.message); }
         finally { setIsUploading(false); }
+    }
+
+    async function performDeleteTrack(track) {
+        const trackId = track.id;
+        const deletingActiveTrack = activeTrack?.id === trackId;
+
+        try {
+            const token = await getItem("auth_token");
+            await deleteTrack(token, trackId);
+
+            if (deletingActiveTrack) {
+                if (isWeb && webAudioRef.current) {
+                    webAudioRef.current.pause();
+                    webAudioRef.current.src = "";
+                    webAudioRef.current = null;
+                }
+
+                if (soundRef.current) {
+                    await soundRef.current.unloadAsync();
+                    soundRef.current = null;
+                }
+
+                setIsPlaying(false);
+                setPosition(0);
+                setDuration(0);
+            }
+
+            const nextTracks = tracks.filter((item) => item.id !== trackId);
+            setTracks(nextTracks);
+            setQueue((cur) => cur.filter((id) => id !== trackId));
+            updateLibrary((cur) => ({
+                ...cur,
+                liked: cur.liked.filter((id) => id !== trackId),
+                wishlist: cur.wishlist.filter((id) => id !== trackId),
+                playlists: cur.playlists.map((playlist) => ({
+                    ...playlist,
+                    trackIds: playlist.trackIds.filter((id) => id !== trackId),
+                })),
+            }));
+
+            if (deletingActiveTrack || activeIndex >= nextTracks.length) {
+                setActiveIndex(0);
+            }
+
+            try {
+                const data = await getTracks(token);
+                setTracks(data);
+                if (!data.length || !data.some((item) => item.id === activeTrack?.id)) {
+                    setActiveIndex(0);
+                }
+            } catch {
+                // The song is already deleted; keep the local removal if refresh fails.
+            }
+
+            Alert.alert("Song deleted", `"${track.title}" was removed from your app.`);
+        } catch (err) {
+            Alert.alert("Delete failed", err.message || "Unable to delete song.");
+        }
+    }
+
+    async function handleDeleteTrack(trackId) {
+        const track = tracks.find((t) => t.id === trackId);
+        if (!track) return;
+
+        if (Platform.OS === "web" && typeof window !== "undefined") {
+            if (window.confirm(`Delete "${track.title}" permanently?`)) {
+                await performDeleteTrack(track);
+            }
+            return;
+        }
+
+        Alert.alert(
+            "Delete song?",
+            `Delete "${track.title}" permanently?`,
+            [
+                { text: "Cancel", style: "cancel" },
+                { text: "Delete", style: "destructive", onPress: () => performDeleteTrack(track) },
+            ]
+        );
     }
 
     // ── Visible tracks ──
@@ -287,6 +618,9 @@ export default function PlayerScreen() {
                             <Ionicons name="cloud-upload-outline" size={20} color={colors.text} />
                         </TouchableOpacity>
                     )}
+                    <TouchableOpacity style={s.iconBtn} onPress={() => setShowYoutubeModal(true)}>
+                        <Ionicons name="logo-youtube" size={20} color={colors.text} />
+                    </TouchableOpacity>
                     <TouchableOpacity style={s.iconBtn} onPress={() => setShowSettings(true)}>
                         <Ionicons name="settings-outline" size={20} color={colors.text} />
                     </TouchableOpacity>
@@ -399,8 +733,17 @@ export default function PlayerScreen() {
                             onLike={() => toggleItem("liked", track.id)}
                             onWishlist={() => toggleItem("wishlist", track.id)}
                             onAddToPlaylist={() => addToPlaylist(selectedPlaylistId, track.id)}
-                            onAddToQueue={() => setQueue((q) => [...q, track.id])}
+                            onAddToQueue={() => setQueue((q) => q.includes(track.id) ? q : [...q, track.id])}
                             onRemoveFromQueue={activeView === "queue" ? () => setQueue((q) => q.filter((x) => x !== track.id)) : null}
+                            isYoutube={isYoutubeLink(track.audioUrl)}
+                            isAdmin={isAdmin}
+                            onOpenLink={() => {
+                                if (isYoutubeLink(track.audioUrl)) {
+                                    setActiveIndex(idx);
+                                    setShowYoutubePlayer(true);
+                                }
+                            }}
+                            onDelete={() => handleDeleteTrack(track.id)}
                         />
                     );
                 })}
@@ -442,6 +785,10 @@ export default function PlayerScreen() {
                 isRepeat={isRepeat}
                 isLiked={activeTrack ? library.liked.includes(activeTrack.id) : false}
                 isWishlisted={activeTrack ? library.wishlist.includes(activeTrack.id) : false}
+                isYoutube={activeTrack ? isYoutubeLink(activeTrack.audioUrl) : false}
+                onOpenLink={() => activeTrack && setShowYoutubePlayer(true)}
+                isAdmin={isAdmin}
+                onDelete={activeTrack ? () => handleDeleteTrack(activeTrack.id) : undefined}
                 onTogglePlay={togglePlay}
                 onNext={nextTrack}
                 onPrev={previousTrack}
@@ -451,7 +798,7 @@ export default function PlayerScreen() {
                 onLike={() => activeTrack && toggleItem("liked", activeTrack.id)}
                 onWishlist={() => activeTrack && toggleItem("wishlist", activeTrack.id)}
                 onAddToPlaylist={() => activeTrack && addToPlaylist(selectedPlaylistId, activeTrack.id)}
-                onAddToQueue={() => activeTrack && setQueue((q) => [...q, activeTrack.id])}
+                onAddToQueue={() => activeTrack && setQueue((q) => q.includes(activeTrack.id) ? q : [...q, activeTrack.id])}
             />
 
             {/* ── Settings Modal ── */}
@@ -478,6 +825,22 @@ export default function PlayerScreen() {
                 error={uploadErr}
                 tracks={tracks}
             />
+            <YoutubeLinkModal
+                visible={showYoutubeModal}
+                onClose={() => setShowYoutubeModal(false)}
+                form={youtubeForm}
+                setForm={setYoutubeForm}
+                onSubmit={handleYoutubeSave}
+                message={youtubeMessage}
+                error={youtubeError}
+            />
+            <YoutubePlayerModal
+                visible={showYoutubePlayer}
+                onClose={() => setShowYoutubePlayer(false)}
+                track={activeTrack}
+                videoId={activeTrack ? getYoutubeVideoId(activeTrack.audioUrl) : null}
+                openExternalUrl={openExternalUrl}
+            />
         </SafeAreaView>
     );
 }
@@ -496,7 +859,7 @@ function GridCard({ track, onPlay }) {
     );
 }
 
-function TrackRow({ track, isActive, isPlaying, onPlay, isLiked, isWishlisted, onLike, onWishlist, onAddToPlaylist, onAddToQueue, onRemoveFromQueue }) {
+function TrackRow({ track, isActive, isPlaying, onPlay, isLiked, isWishlisted, onLike, onWishlist, onAddToPlaylist, onAddToQueue, onRemoveFromQueue, isYoutube, onOpenLink, isAdmin, onDelete }) {
     return (
         <TouchableOpacity style={[s.trackRow, isActive && s.trackRowActive]} onPress={onPlay} activeOpacity={0.7}>
             <View style={[s.trackThumb, { backgroundColor: track.color || colors.accent }]}>
@@ -512,21 +875,31 @@ function TrackRow({ track, isActive, isPlaying, onPlay, isLiked, isWishlisted, o
             </View>
             <Text style={s.trackDuration}>{track.duration}</Text>
             <View style={s.trackActions}>
-                <TouchableOpacity onPress={onLike} style={s.actionBtn}>
+                <TouchableOpacity onPress={(event) => stopActionPress(event, onLike)} style={s.actionBtn}>
                     <Ionicons name={isLiked ? "heart" : "heart-outline"} size={18} color={isLiked ? colors.accent : colors.muted} />
                 </TouchableOpacity>
-                <TouchableOpacity onPress={onWishlist} style={s.actionBtn}>
+                <TouchableOpacity onPress={(event) => stopActionPress(event, onWishlist)} style={s.actionBtn}>
                     <Ionicons name={isWishlisted ? "star" : "star-outline"} size={18} color={isWishlisted ? colors.accent : colors.muted} />
                 </TouchableOpacity>
-                <TouchableOpacity onPress={onAddToPlaylist} style={s.actionBtn}>
+                <TouchableOpacity onPress={(event) => stopActionPress(event, onAddToPlaylist)} style={s.actionBtn}>
                     <Ionicons name="add-circle-outline" size={18} color={colors.muted} />
                 </TouchableOpacity>
-                <TouchableOpacity onPress={onAddToQueue} style={s.actionBtn}>
+                <TouchableOpacity onPress={(event) => stopActionPress(event, onAddToQueue)} style={s.actionBtn}>
                     <Ionicons name="list-outline" size={18} color={colors.muted} />
                 </TouchableOpacity>
-                {onRemoveFromQueue && (
-                    <TouchableOpacity onPress={onRemoveFromQueue} style={s.actionBtn}>
+                {isYoutube && onOpenLink && (
+                    <TouchableOpacity onPress={(event) => stopActionPress(event, onOpenLink)} style={s.actionBtn}>
+                        <Ionicons name="logo-youtube" size={18} color="#ff0000" />
+                    </TouchableOpacity>
+                )}
+                {isAdmin && onDelete && (
+                    <TouchableOpacity onPress={(event) => stopActionPress(event, onDelete)} style={s.actionBtn}>
                         <Ionicons name="trash-outline" size={18} color={colors.danger} />
+                    </TouchableOpacity>
+                )}
+                {onRemoveFromQueue && (
+                    <TouchableOpacity onPress={(event) => stopActionPress(event, onRemoveFromQueue)} style={s.actionBtn}>
+                        <Ionicons name="close-circle-outline" size={18} color={colors.muted} />
                     </TouchableOpacity>
                 )}
             </View>
@@ -534,7 +907,7 @@ function TrackRow({ track, isActive, isPlaying, onPlay, isLiked, isWishlisted, o
     );
 }
 
-function NowPlayingModal({ visible, onClose, track, isPlaying, position, duration, isShuffle, isRepeat, isLiked, isWishlisted, onTogglePlay, onNext, onPrev, onSeek, onShuffle, onRepeat, onLike, onWishlist, onAddToPlaylist, onAddToQueue }) {
+function NowPlayingModal({ visible, onClose, track, isPlaying, position, duration, isShuffle, isRepeat, isLiked, isWishlisted, isYoutube, isAdmin, onOpenLink, onDelete, onTogglePlay, onNext, onPrev, onSeek, onShuffle, onRepeat, onLike, onWishlist, onAddToPlaylist, onAddToQueue }) {
     if (!track) return null;
     const progress = duration > 0 ? position / duration : 0;
 
@@ -573,6 +946,18 @@ function NowPlayingModal({ visible, onClose, track, isPlaying, position, duratio
                         <Ionicons name="list" size={14} color={colors.muted} />
                         <Text style={np.pillText}>Queue</Text>
                     </TouchableOpacity>
+                    {isYoutube && (
+                        <TouchableOpacity style={np.pill} onPress={onOpenLink}>
+                            <Ionicons name="logo-youtube" size={14} color="#ff0000" />
+                            <Text style={np.pillText}>Open YouTube</Text>
+                        </TouchableOpacity>
+                    )}
+                    {isAdmin && onDelete && (
+                        <TouchableOpacity style={[np.pill, { borderColor: colors.danger }]} onPress={onDelete}>
+                            <Ionicons name="trash-outline" size={14} color={colors.danger} />
+                            <Text style={[np.pillText, { color: colors.danger }]}>Delete</Text>
+                        </TouchableOpacity>
+                    )}
                 </View>
 
                 {/* Progress */}
@@ -702,6 +1087,94 @@ function UploadModal({ visible, onClose, form, setForm, onSubmit, isUploading, m
     );
 }
 
+function YoutubeLinkModal({ visible, onClose, form, setForm, onSubmit, message, error }) {
+    return (
+        <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
+            <SafeAreaView style={up.shell}>
+                <View style={up.head}>
+                    <Text style={up.title}>Save YouTube Song</Text>
+                    <TouchableOpacity onPress={onClose}><Ionicons name="close" size={24} color={colors.text} /></TouchableOpacity>
+                </View>
+                <ScrollView contentContainerStyle={up.scroll}>
+                    {[
+                        ["audioUrl", "YouTube URL", "url", "https://www.youtube.com/watch?v=..."],
+                        ["title", "Song Title", "text", "Song Name"],
+                        ["artist", "Artist", "text", "Artist Name"],
+                        ["album", "Album", "text", "Album Name"],
+                        ["duration", "Duration", "text", "3:45"],
+                        ["mood", "Mood / Genre", "text", "Pop"],
+                    ].map(([key, label, type, placeholder]) => (
+                        <View key={key} style={up.field}>
+                            <Text style={up.label}>{label}</Text>
+                            <TextInput
+                                style={up.input}
+                                value={form[key]}
+                                onChangeText={(value) => setForm((cur) => ({ ...cur, [key]: value }))}
+                                placeholder={placeholder}
+                                placeholderTextColor={colors.muted}
+                                autoCapitalize="none"
+                                keyboardType={type === "url" ? "url" : "default"}
+                            />
+                        </View>
+                    ))}
+                    {!!message && <Text style={up.success}>{message}</Text>}
+                    {!!error && <Text style={up.error}>{error}</Text>}
+                    <TouchableOpacity style={up.btn} onPress={onSubmit}>
+                        <Text style={up.btnText}>Save YouTube Link</Text>
+                    </TouchableOpacity>
+                </ScrollView>
+            </SafeAreaView>
+        </Modal>
+    );
+}
+
+function YoutubePlayerModal({ visible, onClose, track, videoId, openExternalUrl }) {
+    const embedUrl = videoId ? `https://www.youtube.com/embed/${videoId}?autoplay=1&controls=1&rel=0` : null;
+    let WebView = null;
+    if (Platform.OS !== "web") {
+        try {
+            WebView = require("react-native-webview").WebView;
+        } catch (err) {
+            WebView = null;
+        }
+    }
+
+    return (
+        <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
+            <SafeAreaView style={up.shell}>
+                <View style={up.head}>
+                    <Text style={up.title}>{track?.title || "YouTube Player"}</Text>
+                    <TouchableOpacity onPress={onClose}><Ionicons name="close" size={24} color={colors.text} /></TouchableOpacity>
+                </View>
+                <View style={up.youtubeWrap}>
+                    {embedUrl ? (
+                        Platform.OS === "web" ? (
+                            <iframe
+                                title="YouTube player"
+                                src={embedUrl}
+                                allow="autoplay; encrypted-media"
+                                allowFullScreen
+                                style={up.youtubeFrame}
+                            />
+                        ) : WebView ? (
+                            <WebView source={{ uri: embedUrl }} style={up.youtubeFrame} />
+                        ) : (
+                            <View style={up.youtubeFallback}>
+                                <Text style={up.helpText}>YouTube playback requires the react-native-webview package.</Text>
+                                <TouchableOpacity style={up.btn} onPress={() => openExternalUrl(track.audioUrl)}>
+                                    <Text style={up.btnText}>Open in Browser</Text>
+                                </TouchableOpacity>
+                            </View>
+                        )
+                    ) : (
+                        <Text style={up.helpText}>Invalid YouTube URL.</Text>
+                    )}
+                </View>
+            </SafeAreaView>
+        </Modal>
+    );
+}
+
 // ── Styles ──
 
 const s = StyleSheet.create({
@@ -820,8 +1293,12 @@ const up = StyleSheet.create({
     field: { marginBottom: 16 },
     label: { fontSize: 12, fontWeight: "700", color: colors.text, marginBottom: 6 },
     input: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: 10, paddingHorizontal: 12, height: 44, color: colors.text, fontSize: 14 },
+    helpText: { fontSize: 12, color: colors.muted, marginBottom: 12 },
     success: { color: colors.accent, fontWeight: "700", marginBottom: 12 },
     error: { color: colors.danger, fontWeight: "700", marginBottom: 12 },
     btn: { backgroundColor: colors.accent, borderRadius: 999, height: 50, alignItems: "center", justifyContent: "center", marginTop: 8 },
     btnText: { color: "#fff", fontSize: 15, fontWeight: "800" },
+    youtubeWrap: { flex: 1, padding: 16 },
+    youtubeFrame: { flex: 1, width: "100%", minHeight: 300, borderRadius: 16, overflow: "hidden", backgroundColor: "#000" },
+    youtubeFallback: { flex: 1, justifyContent: "center", alignItems: "center", gap: 12, padding: 16 },
 });

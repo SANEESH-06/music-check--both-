@@ -6,7 +6,9 @@ export const metadata = {
   title: "EchoWave Music Studio",
   description: "Futuristic music player with admin uploads and theme controls",
   icons: {
-    icon: "/icon.png"
+    icon: "/favicon.svg",
+    shortcut: "/favicon.svg",
+    apple: "/favicon.svg",
   }
 };
 

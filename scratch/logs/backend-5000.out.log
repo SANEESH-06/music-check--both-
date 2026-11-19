@@ -1,0 +1,16 @@
+
+> fastify-backend@1.0.0 dev
+> node src/server.js
+
+In-memory MongoDB connected
+Seed data ready
+{"level":30,"time":1779283580401,"pid":30692,"hostname":"SANU","msg":"Server listening at http://127.0.0.1:5000"}
+{"level":30,"time":1779283580401,"pid":30692,"hostname":"SANU","msg":"Server listening at http://192.168.29.223:5000"}
+{"level":30,"time":1779283622887,"pid":30692,"hostname":"SANU","reqId":"req-1","req":{"method":"POST","url":"/api/auth/login","host":"127.0.0.1:5000","remoteAddress":"127.0.0.1","remotePort":57569},"msg":"incoming request"}
+{"level":30,"time":1779283622899,"pid":30692,"hostname":"SANU","reqId":"req-1","res":{"statusCode":401},"responseTime":11.423799991607666,"msg":"request completed"}
+{"level":30,"time":1779283643840,"pid":30692,"hostname":"SANU","reqId":"req-2","req":{"method":"POST","url":"/api/auth/login","host":"192.168.29.223:5000","remoteAddress":"192.168.29.223","remotePort":58635},"msg":"incoming request"}
+{"level":30,"time":1779283643922,"pid":30692,"hostname":"SANU","reqId":"req-2","res":{"statusCode":200},"responseTime":82.5780000090599,"msg":"request completed"}
+{"level":30,"time":1779283644632,"pid":30692,"hostname":"SANU","reqId":"req-3","req":{"method":"POST","url":"/api/auth/login","host":"127.0.0.1:5000","remoteAddress":"127.0.0.1","remotePort":64739},"msg":"incoming request"}
+{"level":30,"time":1779283644711,"pid":30692,"hostname":"SANU","reqId":"req-3","res":{"statusCode":200},"responseTime":77.99109995365143,"msg":"request completed"}
+{"level":30,"time":1779283662321,"pid":30692,"hostname":"SANU","reqId":"req-4","req":{"method":"POST","url":"/api/auth/login","host":"127.0.0.1:5000","remoteAddress":"127.0.0.1","remotePort":58365},"msg":"incoming request"}
+{"level":30,"time":1779283662399,"pid":30692,"hostname":"SANU","reqId":"req-4","res":{"statusCode":200},"responseTime":77.75439995527267,"msg":"request completed"}

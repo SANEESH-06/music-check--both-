@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { getTracks } from "@/lib/tracks";
-import { uploadTrack, scrapeTracks } from "@/lib/api";
+import { deleteAllTracks, deleteTrack, uploadTrack, scrapeTracks, incrementTrackPlays, getRecommendations } from "@/lib/api";
 import { useToast } from "@/components/ui/Toast";
 import Dropdown from "@/components/ui/Dropdown";
 
@@ -68,6 +68,50 @@ function isUrlCrossOrigin(url) {
   } catch {
     return false;
   }
+}
+
+function normalizeComparable(value) {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function cleanTrackPayload(form) {
+  return {
+    title: String(form.title ?? "").trim(),
+    artist: String(form.artist ?? "").trim(),
+    album: String(form.album ?? "").trim(),
+    duration: String(form.duration ?? "").trim(),
+    mood: String(form.mood ?? "").trim(),
+    color: String(form.color ?? "").trim(),
+    audioUrl: String(form.audioUrl ?? "").trim(),
+    coverUrl: String(form.coverUrl ?? "").trim()
+  };
+}
+
+function findDuplicateTrack(tracks, candidate) {
+  const candidateTitle = normalizeComparable(candidate.title);
+  const candidateArtist = normalizeComparable(candidate.artist);
+  const candidateAudioUrl = normalizeComparable(candidate.audioUrl);
+
+  return tracks.find((track) => {
+    const sameTitleAndArtist =
+      normalizeComparable(track.title) === candidateTitle &&
+      normalizeComparable(track.artist) === candidateArtist;
+    const sameAudioUrl = candidateAudioUrl && normalizeComparable(track.audioUrl) === candidateAudioUrl;
+
+    return sameTitleAndArtist || sameAudioUrl;
+  });
+}
+
+function pruneTrackFromLibrary(library, trackId) {
+  return {
+    ...library,
+    liked: library.liked.filter((id) => id !== trackId),
+    wishlist: library.wishlist.filter((id) => id !== trackId),
+    playlists: library.playlists.map((playlist) => ({
+      ...playlist,
+      trackIds: playlist.trackIds.filter((id) => id !== trackId)
+    }))
+  };
 }
 
 
@@ -199,7 +243,9 @@ const TrackRow = memo(function TrackRow({
   addToQueue,
   activeView,
   removeFromQueue,
-  removeFromPlaylist
+  removeFromPlaylist,
+  isAdmin,
+  onDeleteTrack
 }) {
   return (
     <article className={isActive ? "track-row active" : "track-row"}>
@@ -241,6 +287,9 @@ const TrackRow = memo(function TrackRow({
         {activeView === "playlist" && (
           <button className="mini-action" type="button" aria-label="Remove from playlist" onClick={() => removeFromPlaylist(selectedPlaylistId, track.id)} style={{ color: "var(--danger)" }}><Trash2 size={14} /></button>
         )}
+        {isAdmin && (
+          <button className="mini-action" type="button" aria-label={`Delete ${track.title}`} onClick={() => onDeleteTrack(track)} style={{ color: "var(--danger)" }}><Trash2 size={14} /></button>
+        )}
       </div>
     </article>
   );
@@ -251,6 +300,11 @@ export default function MusicPlayer() {
   const router = useRouter();
   const { toast } = useToast();
   const [playlistToDelete, setPlaylistToDelete] = useState(null);
+  const [trackToDelete, setTrackToDelete] = useState(null);
+  const [isDeletingTrack, setIsDeletingTrack] = useState(false);
+  const [isDeleteAllOpen, setIsDeleteAllOpen] = useState(false);
+  const [deleteAllText, setDeleteAllText] = useState("");
+  const [isDeletingAll, setIsDeletingAll] = useState(false);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [isMiniPlayerOpen, setIsMiniPlayerOpen] = useState(false);
   const audioRef = useRef(null);
@@ -274,6 +328,9 @@ export default function MusicPlayer() {
   const [sleepTimeLeft, setSleepTimeLeft] = useState(null);
   const [eqPreset, setEqPreset] = useState("flat");
   const [queue, setQueue] = useState([]);
+
+  // Recommendations state
+  const [recommendations, setRecommendations] = useState([]);
 
   // Scrape state
   const [isScraping, setIsScraping] = useState(false);
@@ -326,7 +383,7 @@ export default function MusicPlayer() {
     getTracks(token)
       .then(setTracks)
       .catch(() => {
-        const savedTracks = JSON.parse(localStorage.getItem("sounddeck_cached_tracks") || "[]");
+        const savedTracks = JSON.parse(localStorage.getItem("echowave_cached_tracks") || "[]");
 
         if (savedTracks.length) {
           setTracks(savedTracks);
@@ -482,12 +539,37 @@ export default function MusicPlayer() {
   }, [activePlaylist, activeView, library.liked, library.wishlist, queue, query, tracks]);
 
   const recommendedTracks = useMemo(() => {
+    if (recommendations.length > 0) return recommendations;
+    // Fallback: liked tracks first, then first 6
+    const liked = tracks.filter((t) => library.liked.includes(t.id));
+    if (liked.length >= 3) return liked.slice(0, 6);
     return tracks.slice(0, 6);
-  }, [tracks]);
+  }, [recommendations, tracks, library.liked]);
 
   const trendingTracks = useMemo(() => {
     return [...tracks].sort((a, b) => (b.plays || 0) - (a.plays || 0)).slice(0, 6);
   }, [tracks]);
+
+  // Fetch smart recommendations whenever the active track changes
+  useEffect(() => {
+    if (!activeTrack) return;
+    const token = localStorage.getItem("auth_token");
+    if (!token) return;
+
+    getRecommendations(token, {
+      mood: activeTrack.mood,
+      artist: activeTrack.artist,
+      limit: 6
+    })
+      .then((recs) => {
+        // Exclude the currently playing track from recommendations
+        setRecommendations(recs.filter((r) => r.id !== activeTrack.id));
+      })
+      .catch(() => {
+        // Silently fall back to liked / first tracks
+        setRecommendations([]);
+      });
+  }, [activeTrack?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Group tracks by album
   const albumGroups = useMemo(() => {
@@ -602,7 +684,7 @@ export default function MusicPlayer() {
 
 
   // Audio Equalizer setup
-  const initEqualizer = () => {
+  const initEqualizer = (presetToApply) => {
     const audio = audioRef.current;
     if (!audio) return;
 
@@ -638,6 +720,7 @@ export default function MusicPlayer() {
         } catch (e) {
           // ignore
         }
+        sourceRef.current = null;
       }
 
       const source = audioCtxRef.current.createMediaElementSource(audio);
@@ -647,11 +730,32 @@ export default function MusicPlayer() {
       source.connect(lowFilter);
 
       isEqInitialized.current = true;
-      applyEqPreset(eqPreset);
+
+      // Apply gains immediately after initialization
+      const preset = presetToApply ?? eqPreset;
+      const filters = eqFiltersRef.current;
+      if (filters.length >= 3 && preset !== "flat") {
+        applyGains(preset, filters);
+      }
     } catch (err) {
       console.error("Web Audio Equalizer failed to initialize:", err);
     }
   };
+
+  function applyGains(presetName, filters) {
+    const [low, mid, high] = filters;
+    if (presetName === "flat") {
+      low.gain.value = 0; mid.gain.value = 0; high.gain.value = 0;
+    } else if (presetName === "bass-boost") {
+      low.gain.value = 8; mid.gain.value = 0; high.gain.value = -2;
+    } else if (presetName === "vocal-boost") {
+      low.gain.value = -2; mid.gain.value = 6; high.gain.value = 2;
+    } else if (presetName === "treble-boost") {
+      low.gain.value = -4; mid.gain.value = 0; high.gain.value = 8;
+    } else if (presetName === "electronic") {
+      low.gain.value = 6; mid.gain.value = -2; high.gain.value = 5;
+    }
+  }
 
   const applyEqPreset = (presetName) => {
     if (presetName !== "flat" && isUrlCrossOrigin(activeTrack?.audioUrl)) {
@@ -664,46 +768,37 @@ export default function MusicPlayer() {
     }
 
     setEqPreset(presetName);
-    if (presetName === "flat") return;
+
+    if (presetName === "flat") {
+      // Apply flat gains if already initialized
+      if (isEqInitialized.current && eqFiltersRef.current.length >= 3) {
+        applyGains("flat", eqFiltersRef.current);
+      }
+      return;
+    }
 
     if (!isEqInitialized.current || !sourceRef.current) {
-      initEqualizer();
+      // initEqualizer will apply the gains after setup
+      initEqualizer(presetName);
       return;
     }
 
     const filters = eqFiltersRef.current;
     if (filters.length < 3) return;
-
-    const [low, mid, high] = filters;
-
-    if (presetName === "flat") {
-      low.gain.value = 0;
-      mid.gain.value = 0;
-      high.gain.value = 0;
-    } else if (presetName === "bass-boost") {
-      low.gain.value = 8;
-      mid.gain.value = 0;
-      high.gain.value = -2;
-    } else if (presetName === "vocal-boost") {
-      low.gain.value = -2;
-      mid.gain.value = 6;
-      high.gain.value = 2;
-    } else if (presetName === "treble-boost") {
-      low.gain.value = -4;
-      mid.gain.value = 0;
-      high.gain.value = 8;
-    } else if (presetName === "electronic") {
-      low.gain.value = 6;
-      mid.gain.value = -2;
-      high.gain.value = 5;
-    }
+    applyGains(presetName, filters);
   };
 
   useEffect(() => {
-    if (useEqualizer && audioRef.current) {
-      initEqualizer();
+    // Reset EQ state when audio element remounts (key changes between eq-audio/direct-audio)
+    isEqInitialized.current = false;
+    if (sourceRef.current) {
+      try { sourceRef.current.disconnect(); } catch { }
+      sourceRef.current = null;
     }
-  }, [useEqualizer, audioRef.current]);
+    if (useEqualizer && audioRef.current) {
+      initEqualizer(eqPreset);
+    }
+  }, [useEqualizer]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function updateLibrary(updater) {
     setLibrary((current) => {
@@ -804,6 +899,17 @@ export default function MusicPlayer() {
   };
 
   const addToPlaylist = useCallback((playlistId, trackId) => {
+    const playlist = library.playlists.find((item) => item.id === playlistId);
+
+    if (playlist?.trackIds.includes(trackId)) {
+      toast({
+        title: "Already Added",
+        description: "This song is already in the selected playlist.",
+        type: "info"
+      });
+      return;
+    }
+
     updateLibrary((current) => ({
       ...current,
       playlists: current.playlists.map((playlist) => {
@@ -817,7 +923,7 @@ export default function MusicPlayer() {
         };
       })
     }));
-  }, []);
+  }, [library.playlists, toast]);
 
   const removeFromPlaylist = useCallback((playlistId, trackId) => {
     updateLibrary((current) => ({
@@ -836,12 +942,148 @@ export default function MusicPlayer() {
   }, []);
 
   const addToQueue = useCallback((trackId) => {
-    setQueue((current) => [...current, trackId]);
-  }, []);
+    setQueue((current) => {
+      if (current.includes(trackId)) {
+        toast({
+          title: "Already Queued",
+          description: "This song is already in the queue.",
+          type: "info"
+        });
+        return current;
+      }
+
+      return [...current, trackId];
+    });
+  }, [toast]);
 
   const removeFromQueue = useCallback((trackId) => {
     setQueue((current) => current.filter((id) => id !== trackId));
   }, []);
+
+  function removeTrackFromState(trackId) {
+    const activeId = tracks[activeIndex]?.id;
+    const nextTracks = tracks.filter((track) => track.id !== trackId);
+
+    setQueue((current) => current.filter((id) => id !== trackId));
+    updateLibrary((current) => pruneTrackFromLibrary(current, trackId));
+    setTracks(nextTracks);
+
+    if (!nextTracks.length) {
+      setActiveIndex(0);
+      return;
+    }
+
+    if (activeId === trackId) {
+      setActiveIndex(Math.min(activeIndex, nextTracks.length - 1));
+      return;
+    }
+
+    const nextActiveIndex = nextTracks.findIndex((track) => track.id === activeId);
+    setActiveIndex(nextActiveIndex === -1 ? 0 : nextActiveIndex);
+  }
+
+  function requestDeleteTrack(track) {
+    if (!isAdmin) {
+      toast({
+        title: "Action Restricted",
+        description: "Admin access is required to delete songs.",
+        type: "error"
+      });
+      return;
+    }
+
+    setTrackToDelete(track);
+  }
+
+  async function confirmDeleteTrack() {
+    if (!trackToDelete) return;
+
+    setIsDeletingTrack(true);
+
+    try {
+      const token = localStorage.getItem("auth_token");
+      if (!token) throw new Error("You must be signed in to delete songs.");
+
+      const deletingActiveTrack = activeTrack?.id === trackToDelete.id;
+      const result = await deleteTrack(token, trackToDelete.id);
+
+      if (deletingActiveTrack && audioRef.current) {
+        audioRef.current.pause();
+        setIsPlaying(false);
+      }
+
+      removeTrackFromState(trackToDelete.id);
+      setTrackToDelete(null);
+      toast({
+        title: "Song Deleted",
+        description: result.message || `"${trackToDelete.title}" was removed from your app.`,
+        type: "success"
+      });
+    } catch (err) {
+      toast({
+        title: "Delete Failed",
+        description: err.message,
+        type: "error"
+      });
+    } finally {
+      setIsDeletingTrack(false);
+    }
+  }
+
+  async function confirmDeleteAllTracks() {
+    if (deleteAllText.trim().toUpperCase() !== "DELETE") {
+      toast({
+        title: "Validation Required",
+        description: "Type DELETE to confirm removing every song.",
+        type: "warning"
+      });
+      return;
+    }
+
+    setIsDeletingAll(true);
+
+    try {
+      const token = localStorage.getItem("auth_token");
+      if (!token) throw new Error("You must be signed in to delete songs.");
+
+      const result = await deleteAllTracks(token);
+
+      if (audioRef.current) {
+        audioRef.current.pause();
+      }
+
+      setIsPlaying(false);
+      setTracks([]);
+      setActiveIndex(0);
+      setQueue([]);
+      updateLibrary((current) => ({
+        ...current,
+        liked: [],
+        wishlist: [],
+        playlists: current.playlists.map((playlist) => ({
+          ...playlist,
+          trackIds: []
+        }))
+      }));
+      setIsDeleteAllOpen(false);
+      setDeleteAllText("");
+      setActiveView("all");
+      setSelectedAlbum(null);
+      toast({
+        title: "Songs Deleted",
+        description: result.message || "All songs were removed from your app.",
+        type: "success"
+      });
+    } catch (err) {
+      toast({
+        title: "Delete All Failed",
+        description: err.message,
+        type: "error"
+      });
+    } finally {
+      setIsDeletingAll(false);
+    }
+  }
 
   const playTrack = useCallback((index) => {
     const audio = audioRef.current;
@@ -858,10 +1100,20 @@ export default function MusicPlayer() {
       return;
     }
 
-    // New track — effect will handle play after src change
+    // New track — increment plays on the outgoing active track, effect handles src
+    const token = localStorage.getItem("auth_token");
+    const newTrack = tracks[index];
+    if (token && newTrack?.id) {
+      incrementTrackPlays(token, newTrack.id);
+      // Update plays count locally so trendingTracks stays accurate
+      setTracks((prev) =>
+        prev.map((t) => t.id === newTrack.id ? { ...t, plays: (t.plays || 0) + 1 } : t)
+      );
+    }
+
     shouldPlayRef.current = true;
     setActiveIndex(index);
-  }, [activeIndex]);
+  }, [activeIndex, tracks]);
 
   const togglePlay = useCallback(() => {
     const audio = audioRef.current;
@@ -963,6 +1215,20 @@ export default function MusicPlayer() {
     if (!file) return;
     if (!file.type.startsWith("audio/")) {
       setUploadError("Please select a valid audio file.");
+      toast({
+        title: "Invalid File",
+        description: "Please select a valid audio file.",
+        type: "warning"
+      });
+      return;
+    }
+    if (file.size > 16 * 1024 * 1024) {
+      setUploadError("Audio files must be 16 MB or smaller.");
+      toast({
+        title: "File Too Large",
+        description: "Audio files must be 16 MB or smaller.",
+        type: "warning"
+      });
       return;
     }
     setUploadError("");
@@ -1032,11 +1298,30 @@ export default function MusicPlayer() {
   // Handle local track upload from modal
   const handleUpload = async (e) => {
     e.preventDefault();
-    if (!uploadForm.audioUrl) {
-      setUploadError("Please select or drop an audio file first.");
+    const payload = cleanTrackPayload(uploadForm);
+    const missingField = ["title", "artist", "album", "duration", "mood", "color", "audioUrl"].find((field) => !payload[field]);
+
+    if (missingField) {
+      const message = missingField === "audioUrl"
+        ? "Please select or drop an audio file first."
+        : "Please complete all required song fields.";
+      setUploadError(message);
       toast({
-        title: "Selection Required",
-        description: "Please select or drop an audio file first.",
+        title: "Validation Required",
+        description: message,
+        type: "warning"
+      });
+      return;
+    }
+
+    const duplicate = findDuplicateTrack(tracks, payload);
+
+    if (duplicate) {
+      const message = `"${duplicate.title}" by ${duplicate.artist} is already in your library.`;
+      setUploadError(message);
+      toast({
+        title: "Duplicate Song",
+        description: message,
         type: "warning"
       });
       return;
@@ -1048,7 +1333,7 @@ export default function MusicPlayer() {
 
     try {
       const token = localStorage.getItem("auth_token");
-      await uploadTrack(token, uploadForm);
+      await uploadTrack(token, payload);
       setUploadMessage("Track uploaded successfully!");
       toast({
         title: "Success",
@@ -1081,7 +1366,7 @@ export default function MusicPlayer() {
     }
   };
 
-  if (isLoading || !activeTrack) {
+  if (isLoading) {
     return <div className="loading-panel">Preparing your premium library…</div>;
   }
 
@@ -1100,7 +1385,27 @@ export default function MusicPlayer() {
         <button className="mobile-menu-btn" type="button" aria-label="Toggle menu" onClick={() => setIsMobileSidebarOpen((v) => !v)}>
           <Menu size={22} />
         </button>
-        <span className="mobile-topbar-title">EchoWave</span>
+        <span className="mobile-topbar-title" style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+          <svg width="24" height="24" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+            <defs>
+              <radialGradient id="mtBg" cx="40%" cy="30%" r="65%"><stop offset="0%" stopColor="#1e3a4a" /><stop offset="100%" stopColor="#060e14" /></radialGradient>
+              <linearGradient id="mtRim" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stopColor="#4a9e8e" stopOpacity="0.6" /><stop offset="40%" stopColor="#22c55e" stopOpacity="0.9" /><stop offset="100%" stopColor="#166534" stopOpacity="0.3" /></linearGradient>
+              <linearGradient id="mtWave" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stopColor="#86efac" /><stop offset="50%" stopColor="#22c55e" /><stop offset="100%" stopColor="#34d399" /></linearGradient>
+              <filter id="mtGlow" x="-20%" y="-80%" width="140%" height="260%"><feGaussianBlur stdDeviation="1.2" result="blur" /><feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge></filter>
+              <clipPath id="mtClip"><circle cx="32" cy="32" r="29" /></clipPath>
+            </defs>
+            <circle cx="32" cy="32" r="30" fill="url(#mtBg)" />
+            <circle cx="32" cy="32" r="29.5" fill="none" stroke="url(#mtRim)" strokeWidth="1.5" />
+            <g clipPath="url(#mtClip)" filter="url(#mtGlow)">
+              <line x1="8" y1="32" x2="56" y2="32" stroke="url(#mtWave)" strokeWidth="0.5" opacity="0.5" />
+              <path d="M12 32 C15 25,18 19,20 32 C22 45,26 45,32 32 C38 19,42 19,44 32 C46 45,49 39,52 32" fill="none" stroke="url(#mtWave)" strokeWidth="1" opacity="0.6" />
+              <path d="M12 32 C15 39,18 45,20 32 C22 19,26 19,32 32 C38 45,42 45,44 32 C46 19,49 25,52 32" fill="none" stroke="url(#mtWave)" strokeWidth="1" opacity="0.6" />
+              <path d="M16 32 C18 27,20 21,20 32 C20 43,24 43,32 32 C40 21,44 21,44 32 C44 43,46 37,48 32" fill="none" stroke="#86efac" strokeWidth="1.4" />
+              <path d="M16 32 C18 37,20 43,20 32 C20 21,24 21,32 32 C40 43,44 43,44 32 C44 21,46 27,48 32" fill="none" stroke="#86efac" strokeWidth="1.4" />
+            </g>
+          </svg>
+          EchoWave
+        </span>
         <button className="mobile-menu-btn" type="button" aria-label="Search" onClick={() => document.querySelector('.topbar-search input')?.focus()}>
           <Search size={20} />
         </button>
@@ -1112,8 +1417,37 @@ export default function MusicPlayer() {
       {/* ── Sidebar ── */}
       <aside className={`sidebar ${isMobileSidebarOpen ? "sidebar-open" : ""}`}>
         <div className="sidebar-logo">
-          <div className="sidebar-logo-icon" style={{ padding: "4px" }}>
-            <img src="/icon.png" alt="EchoWave Logo" style={{ width: "100%", height: "100%", borderRadius: "50%", objectFit: "cover" }} />
+          <div className="sidebar-logo-icon" style={{ padding: "2px" }}>
+            <svg width="100%" height="100%" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <defs>
+                <radialGradient id="slBg" cx="40%" cy="30%" r="65%"><stop offset="0%" stopColor="#1e3a4a" /><stop offset="50%" stopColor="#0d1f2d" /><stop offset="100%" stopColor="#060e14" /></radialGradient>
+                <linearGradient id="slRim" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stopColor="#4a9e8e" stopOpacity="0.6" /><stop offset="40%" stopColor="#22c55e" stopOpacity="0.9" /><stop offset="100%" stopColor="#166534" stopOpacity="0.3" /></linearGradient>
+                <linearGradient id="slWave" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stopColor="#86efac" /><stop offset="30%" stopColor="#4ade80" /><stop offset="50%" stopColor="#22c55e" /><stop offset="70%" stopColor="#86efac" /><stop offset="100%" stopColor="#34d399" /></linearGradient>
+                <filter id="slGlow" x="-20%" y="-80%" width="140%" height="260%"><feGaussianBlur stdDeviation="1.2" result="blur" /><feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge></filter>
+                <filter id="slOuterGlow" x="-5%" y="-5%" width="110%" height="110%"><feGaussianBlur stdDeviation="2" result="blur" /><feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge></filter>
+                <radialGradient id="slGloss" cx="40%" cy="25%" r="50%"><stop offset="0%" stopColor="#ffffff" stopOpacity="0.12" /><stop offset="100%" stopColor="#ffffff" stopOpacity="0" /></radialGradient>
+                <clipPath id="slClip"><circle cx="32" cy="32" r="29" /></clipPath>
+              </defs>
+              <circle cx="32" cy="32" r="31" fill="none" stroke="#22c55e" strokeWidth="1" opacity="0.35" filter="url(#slOuterGlow)" />
+              <circle cx="32" cy="32" r="30" fill="url(#slBg)" />
+              <circle cx="32" cy="32" r="29.5" fill="none" stroke="url(#slRim)" strokeWidth="1.5" />
+              <circle cx="32" cy="32" r="27" fill="none" stroke="#22c55e" strokeWidth="0.4" opacity="0.2" />
+              <g clipPath="url(#slClip)" filter="url(#slGlow)">
+                <line x1="8" y1="32" x2="56" y2="32" stroke="url(#slWave)" strokeWidth="0.5" opacity="0.5" />
+                <path d="M8 32 C12 20,16 14,20 32 C24 50,28 50,32 32 C36 14,40 14,44 32 C48 50,52 44,56 32" fill="none" stroke="url(#slWave)" strokeWidth="0.5" opacity="0.2" />
+                <path d="M8 32 C12 44,16 50,20 32 C24 14,28 14,32 32 C36 50,40 50,44 32 C48 14,52 20,56 32" fill="none" stroke="url(#slWave)" strokeWidth="0.5" opacity="0.2" />
+                <path d="M10 32 C13 24,17 18,20 32 C23 46,27 46,32 32 C37 18,41 18,44 32 C47 46,51 40,54 32" fill="none" stroke="url(#slWave)" strokeWidth="0.8" opacity="0.45" />
+                <path d="M10 32 C13 40,17 46,20 32 C23 18,27 18,32 32 C37 46,41 46,44 32 C47 18,51 24,54 32" fill="none" stroke="url(#slWave)" strokeWidth="0.8" opacity="0.45" />
+                <path d="M12 32 C15 25,18 19,20 32 C22 45,26 45,32 32 C38 19,42 19,44 32 C46 45,49 39,52 32" fill="none" stroke="url(#slWave)" strokeWidth="1" opacity="0.6" />
+                <path d="M12 32 C15 39,18 45,20 32 C22 19,26 19,32 32 C38 45,42 45,44 32 C46 19,49 25,52 32" fill="none" stroke="url(#slWave)" strokeWidth="1" opacity="0.6" />
+                <path d="M14 32 C16 26,19 20,20 32 C21 44,25 44,32 32 C39 20,43 20,44 32 C45 44,48 38,50 32" fill="none" stroke="url(#slWave)" strokeWidth="1.2" opacity="0.8" />
+                <path d="M14 32 C16 38,19 44,20 32 C21 20,25 20,32 32 C39 44,43 44,44 32 C45 20,48 26,50 32" fill="none" stroke="url(#slWave)" strokeWidth="1.2" opacity="0.8" />
+                <path d="M16 32 C18 27,20 21,20 32 C20 43,24 43,32 32 C40 21,44 21,44 32 C44 43,46 37,48 32" fill="none" stroke="#86efac" strokeWidth="1.4" opacity="1" />
+                <path d="M16 32 C18 37,20 43,20 32 C20 21,24 21,32 32 C40 43,44 43,44 32 C44 21,46 27,48 32" fill="none" stroke="#86efac" strokeWidth="1.4" opacity="1" />
+              </g>
+              <circle cx="32" cy="32" r="29" fill="url(#slGloss)" />
+              <path d="M 16 14 A 20 20 0 0 1 48 14" fill="none" stroke="#ffffff" strokeWidth="1.5" strokeLinecap="round" opacity="0.1" />
+            </svg>
           </div>
           <span>EchoWave</span>
         </div>
@@ -1181,6 +1515,10 @@ export default function MusicPlayer() {
                 <button type="button" onClick={() => setIsUploadOpen(true)}
                   style={{ background: "var(--surface)", border: "1px solid var(--line)", color: "var(--text)", borderRadius: 999, padding: "0 14px", height: 34, fontWeight: 700, fontSize: "0.78rem", cursor: "pointer" }}>
                   Upload
+                </button>
+                <button type="button" onClick={() => setIsDeleteAllOpen(true)}
+                  style={{ background: "rgba(239,68,68,0.1)", border: "1px solid var(--danger)", color: "var(--danger)", borderRadius: 999, padding: "0 14px", height: 34, fontWeight: 700, fontSize: "0.78rem", cursor: "pointer" }}>
+                  Delete all
                 </button>
               </>
             )}
@@ -1282,13 +1620,28 @@ export default function MusicPlayer() {
             {activeView === "all" && !query.trim() && tracks.length > 0 && (
               <div style={{ display: "flex", flexDirection: "column", gap: 24, marginBottom: 24 }}>
                 <div>
-                  <h3 style={{ fontSize: "0.9rem", fontWeight: 800, marginBottom: 12 }}>Recommended for You</h3>
-                  <div className="spotify-grid">
-                    {recommendedTracks.map((track) => {
-                      const idx = tracks.findIndex((t) => t.id === track.id);
-                      return <TrackCard key={`rec-${track.id}`} track={track} onPlay={() => playTrack(idx)} />;
-                    })}
+                  <div className="section-head" style={{ marginBottom: 12 }}>
+                    <h3 style={{ fontSize: "0.9rem", fontWeight: 800, margin: 0 }}>
+                      Recommended for You
+                    </h3>
+                    {activeTrack && (
+                      <span style={{ fontSize: "0.74rem", color: "var(--muted)" }}>
+                        because you&apos;re listening to <strong style={{ color: "var(--accent)" }}>{activeTrack.mood}</strong>
+                      </span>
+                    )}
                   </div>
+                  {recommendedTracks.length > 0 ? (
+                    <div className="spotify-grid">
+                      {recommendedTracks.map((track) => {
+                        const idx = tracks.findIndex((t) => t.id === track.id);
+                        return <TrackCard key={`rec-${track.id}`} track={track} onPlay={() => idx !== -1 && playTrack(idx)} />;
+                      })}
+                    </div>
+                  ) : (
+                    <div style={{ color: "var(--muted)", fontSize: "0.85rem", padding: "12px 0" }}>
+                      Like some songs to get personalised picks.
+                    </div>
+                  )}
                 </div>
                 <div>
                   <h3 style={{ fontSize: "0.9rem", fontWeight: 800, marginBottom: 12 }}>Trending Now</h3>
@@ -1305,6 +1658,19 @@ export default function MusicPlayer() {
 
             {activeView === "queue" && queue.length === 0 && (
               <div style={{ padding: "40px 0", textAlign: "center", color: "var(--muted)" }}>No tracks in queue. Add some from the track options!</div>
+            )}
+
+            {tracks.length === 0 && (
+              <div style={{ padding: "56px 0", textAlign: "center", color: "var(--muted)", display: "grid", justifyItems: "center", gap: 12 }}>
+                <Music size={28} />
+                <h3 style={{ color: "var(--text)", fontSize: "1rem", margin: 0 }}>No songs in your library</h3>
+                <p style={{ margin: 0, maxWidth: 360 }}>Upload a song to start listening again.</p>
+                {isAdmin && (
+                  <button type="button" className="pill-button active" onClick={() => setIsUploadOpen(true)}>
+                    <Upload size={14} /> Upload song
+                  </button>
+                )}
+              </div>
             )}
 
             {/* Albums grid */}
@@ -1379,7 +1745,7 @@ export default function MusicPlayer() {
             <div className={library.settings.compactRows ? "track-list compact" : "track-list"}>
               {visibleTracks.map((track) => {
                 const originalIndex = tracks.findIndex((item) => item.id === track.id);
-                const isActive = track.id === activeTrack.id;
+                const isActive = track.id === activeTrack?.id;
                 return (
                   <TrackRow
                     key={track.id}
@@ -1398,6 +1764,8 @@ export default function MusicPlayer() {
                     activeView={activeView}
                     removeFromQueue={removeFromQueue}
                     removeFromPlaylist={removeFromPlaylist}
+                    isAdmin={isAdmin}
+                    onDeleteTrack={requestDeleteTrack}
                   />
                 );
               })}
@@ -1405,58 +1773,63 @@ export default function MusicPlayer() {
           </div>
 
           {/* ── Now Playing Panel ── */}
-          <aside className="now-playing-panel">
-            <div className="now-playing-art" style={{ background: activeTrack.coverUrl ? "none" : `linear-gradient(135deg, ${activeTrack.color || "#22c55e"}, #1a2035)`, position: "relative", overflow: "hidden" }}>
-              {activeTrack.coverUrl ? (
-                <>
-                  <img src={activeTrack.coverUrl} alt={activeTrack.title} style={{ width: "100%", height: "100%", objectFit: "cover", position: "absolute", top: 0, left: 0, borderRadius: "inherit" }} />
-                  <div className={isPlaying ? "vinyl spinning" : "vinyl"} style={{ opacity: 0.85 }} />
-                </>
-              ) : (
-                <>
-                  <span>{activeTrack.title.slice(0, 1)}</span>
-                  <div className={isPlaying ? "vinyl spinning" : "vinyl"} />
-                </>
-              )}
-            </div>
+          {activeTrack && (
+            <aside className="now-playing-panel">
+              <div className="now-playing-art" style={{ background: activeTrack.coverUrl ? "none" : `linear-gradient(135deg, ${activeTrack.color || "#22c55e"}, #1a2035)`, position: "relative", overflow: "hidden" }}>
+                {activeTrack.coverUrl ? (
+                  <>
+                    <img src={activeTrack.coverUrl} alt={activeTrack.title} style={{ width: "100%", height: "100%", objectFit: "cover", position: "absolute", top: 0, left: 0, borderRadius: "inherit" }} />
+                    <div className={isPlaying ? "vinyl spinning" : "vinyl"} style={{ opacity: 0.85 }} />
+                  </>
+                ) : (
+                  <>
+                    <span>{activeTrack.title.slice(0, 1)}</span>
+                    <div className={isPlaying ? "vinyl spinning" : "vinyl"} />
+                  </>
+                )}
+              </div>
 
-            <div className="now-playing-title">
-              {activeTrack.title}
-              {useEqualizer && (
-                <span className="eq-badge-active" title="Equalizer Enabled" style={{ marginLeft: "8px", verticalAlign: "middle" }}>
-                  <SlidersHorizontal size={12} style={{ display: "inline-block", color: "var(--accent)" }} />
-                </span>
-              )}
-            </div>
-            <div className="now-playing-artist">
-              {activeTrack.artist} · <span style={{ color: "var(--accent)" }}>{activeTrack.mood}</span>
-              <span style={{ marginLeft: "8px" }}><CreativeCommonsBadge /></span>
-            </div>
+              <div className="now-playing-title">
+                {activeTrack.title}
+                {useEqualizer && (
+                  <span className="eq-badge-active" title="Equalizer Enabled" style={{ marginLeft: "8px", verticalAlign: "middle" }}>
+                    <SlidersHorizontal size={12} style={{ display: "inline-block", color: "var(--accent)" }} />
+                  </span>
+                )}
+              </div>
+              <div className="now-playing-artist">
+                {activeTrack.artist} · <span style={{ color: "var(--accent)" }}>{activeTrack.mood}</span>
+                <span style={{ marginLeft: "8px" }}><CreativeCommonsBadge /></span>
+              </div>
 
-            <TrackProgressBar audioRef={audioRef} activeTrackUrl={activeTrack.audioUrl} useEqualizer={useEqualizer} />
+              <TrackProgressBar audioRef={audioRef} activeTrackUrl={activeTrack.audioUrl} useEqualizer={useEqualizer} />
 
-            <div className="controls">
-              <button className={isShuffle ? "icon-button active" : "icon-button"} type="button" aria-label="Shuffle" onClick={() => setIsShuffle((v) => !v)}><Shuffle size={15} /></button>
-              <button className="icon-button" type="button" aria-label="Previous" onClick={previousTrack}><SkipBack size={17} /></button>
-              <button className="play-button" type="button" aria-label="Play/Pause" onClick={togglePlay}>
-                {isPlaying ? <Pause size={22} fill="currentColor" /> : <Play size={22} fill="currentColor" />}
-              </button>
-              <button className="icon-button" type="button" aria-label="Next" onClick={nextTrack}><SkipForward size={17} /></button>
-              <button className={isRepeat ? "icon-button active" : "icon-button"} type="button" aria-label="Repeat" onClick={() => setIsRepeat((v) => !v)}><Repeat size={15} /></button>
-            </div>
+              <div className="controls">
+                <button className={isShuffle ? "icon-button active" : "icon-button"} type="button" aria-label="Shuffle" onClick={() => setIsShuffle((v) => !v)}><Shuffle size={15} /></button>
+                <button className="icon-button" type="button" aria-label="Previous" onClick={previousTrack}><SkipBack size={17} /></button>
+                <button className="play-button" type="button" aria-label="Play/Pause" onClick={togglePlay}>
+                  {isPlaying ? <Pause size={22} fill="currentColor" /> : <Play size={22} fill="currentColor" />}
+                </button>
+                <button className="icon-button" type="button" aria-label="Next" onClick={nextTrack}><SkipForward size={17} /></button>
+                <button className={isRepeat ? "icon-button active" : "icon-button"} type="button" aria-label="Repeat" onClick={() => setIsRepeat((v) => !v)}><Repeat size={15} /></button>
+              </div>
 
-            <label className="volume-control">
-              <Volume2 size={15} aria-hidden="true" />
-              <input aria-label="Volume" type="range" min="0" max="1" step="0.01" value={volume} onChange={(e) => setVolume(Number(e.target.value))} />
-            </label>
+              <label className="volume-control">
+                <Volume2 size={15} aria-hidden="true" />
+                <input aria-label="Volume" type="range" min="0" max="1" step="0.01" value={volume} onChange={(e) => setVolume(Number(e.target.value))} />
+              </label>
 
-            <div className="quick-actions" style={{ marginTop: 14 }}>
-              <button className={library.liked.includes(activeTrack.id) ? "pill-button active" : "pill-button"} type="button" onClick={() => toggleArrayItem("liked", activeTrack.id)}><Heart size={13} fill="currentColor" /> Like</button>
-              <button className={library.wishlist.includes(activeTrack.id) ? "pill-button active" : "pill-button"} type="button" onClick={() => toggleArrayItem("wishlist", activeTrack.id)}><Star size={13} fill="currentColor" /> Wishlist</button>
-              <button className="pill-button" type="button" onClick={() => addToPlaylist(selectedPlaylistId, activeTrack.id)}><Plus size={13} /> Playlist</button>
-              <button className="pill-button" type="button" onClick={() => addToQueue(activeTrack.id)}><ListOrdered size={13} /> Queue</button>
-            </div>
-          </aside>
+              <div className="quick-actions" style={{ marginTop: 14 }}>
+                <button className={library.liked.includes(activeTrack.id) ? "pill-button active" : "pill-button"} type="button" onClick={() => toggleArrayItem("liked", activeTrack.id)}><Heart size={13} fill="currentColor" /> Like</button>
+                <button className={library.wishlist.includes(activeTrack.id) ? "pill-button active" : "pill-button"} type="button" onClick={() => toggleArrayItem("wishlist", activeTrack.id)}><Star size={13} fill="currentColor" /> Wishlist</button>
+                <button className="pill-button" type="button" onClick={() => addToPlaylist(selectedPlaylistId, activeTrack.id)}><Plus size={13} /> Playlist</button>
+                <button className="pill-button" type="button" onClick={() => addToQueue(activeTrack.id)}><ListOrdered size={13} /> Queue</button>
+                {isAdmin && (
+                  <button className="pill-button" type="button" onClick={() => requestDeleteTrack(activeTrack)} style={{ color: "var(--danger)", borderColor: "var(--danger)" }}><Trash2 size={13} /> Delete</button>
+                )}
+              </div>
+            </aside>
+          )}
 
         </div>{/* end page-body */}
       </div>{/* end main-content */}
@@ -1583,6 +1956,67 @@ export default function MusicPlayer() {
       )}
 
       {/* ── Upload Modal ── */}
+      {/* Delete song confirmation */}
+      {trackToDelete && (
+        <div className="upload-modal-overlay" style={{ zIndex: 10000 }}>
+          <div className="upload-modal-content" style={{ maxWidth: 420, textAlign: "center", padding: "24px" }}>
+            <h2 style={{ fontSize: "1.25rem", fontWeight: 800, marginBottom: 10 }}>Delete Song</h2>
+            <p style={{ color: "var(--muted)", fontSize: "0.9rem", marginBottom: 24, lineHeight: 1.5 }}>
+              Delete "{trackToDelete.title}" from your app? This removes it from all songs, playlists, likes, wishlist, and queue.
+            </p>
+            <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
+              <button type="button" className="pill-button" onClick={() => setTrackToDelete(null)} disabled={isDeletingTrack} style={{ minWidth: 100 }}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="pill-button active"
+                onClick={confirmDeleteTrack}
+                disabled={isDeletingTrack}
+                style={{ background: "var(--danger)", color: "#fff", borderColor: "var(--danger)", minWidth: 100 }}
+              >
+                {isDeletingTrack ? "Deleting..." : "Delete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete all confirmation */}
+      {isDeleteAllOpen && (
+        <div className="upload-modal-overlay" style={{ zIndex: 10000 }}>
+          <div className="upload-modal-content" style={{ maxWidth: 440, padding: "24px" }}>
+            <h2 style={{ fontSize: "1.25rem", fontWeight: 800, marginBottom: 10 }}>Delete All Songs</h2>
+            <p style={{ color: "var(--muted)", fontSize: "0.9rem", marginBottom: 16, lineHeight: 1.5 }}>
+              This permanently removes every song from your app and clears all song references from playlists, likes, wishlist, and queue.
+            </p>
+            <label style={{ display: "grid", gap: 8, color: "var(--muted)", fontSize: "0.82rem", fontWeight: 700 }}>
+              Type DELETE to confirm
+              <input
+                value={deleteAllText}
+                onChange={(e) => setDeleteAllText(e.target.value)}
+                placeholder="DELETE"
+                style={{ height: 44, borderRadius: "var(--radius-sm)", border: "1px solid var(--line)", background: "var(--surface)", color: "var(--text)", padding: "0 12px", fontWeight: 700 }}
+              />
+            </label>
+            <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", marginTop: 24 }}>
+              <button type="button" className="pill-button" onClick={() => { setIsDeleteAllOpen(false); setDeleteAllText(""); }} disabled={isDeletingAll} style={{ minWidth: 100 }}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="pill-button active"
+                onClick={confirmDeleteAllTracks}
+                disabled={isDeletingAll}
+                style={{ background: "var(--danger)", color: "#fff", borderColor: "var(--danger)", minWidth: 120 }}
+              >
+                {isDeletingAll ? "Deleting..." : "Delete all"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {isUploadOpen && (
         <div className="upload-modal-overlay">
           <div className="upload-modal-content">

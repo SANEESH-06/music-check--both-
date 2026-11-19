@@ -19,7 +19,9 @@ export async function connectDb() {
     }
 
     console.warn("MongoDB not available, starting in-memory MongoDB for development.");
-    memoryServer = await MongoMemoryServer.create();
+    memoryServer = await MongoMemoryServer.create({
+      instance: { startupWaitInMs: 60000 }
+    });
     await mongoose.connect(memoryServer.getUri());
     console.log("In-memory MongoDB connected");
   }

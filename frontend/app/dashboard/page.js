@@ -5,12 +5,47 @@ import { CheckCircle2, XCircle, Music, Upload, ArrowLeft, BarChart2, Users, Disc
 import { useRouter } from "next/navigation";
 import { uploadTrack, scrapeTracks } from "@/lib/api";
 import { getTracks } from "@/lib/tracks";
+import { useToast } from "@/components/ui/Toast";
+
+function normalizeComparable(value) {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+function cleanTrackPayload(form) {
+  return {
+    title: String(form.title ?? "").trim(),
+    artist: String(form.artist ?? "").trim(),
+    album: String(form.album ?? "").trim(),
+    duration: String(form.duration ?? "").trim(),
+    mood: String(form.mood ?? "").trim(),
+    color: String(form.color ?? "").trim(),
+    audioUrl: String(form.audioUrl ?? "").trim(),
+    coverUrl: String(form.coverUrl ?? "").trim()
+  };
+}
+
+function findDuplicateTrack(tracks, candidate) {
+  const candidateTitle = normalizeComparable(candidate.title);
+  const candidateArtist = normalizeComparable(candidate.artist);
+  const candidateAudioUrl = normalizeComparable(candidate.audioUrl);
+
+  return tracks.find((track) => {
+    const sameTitleAndArtist =
+      normalizeComparable(track.title) === candidateTitle &&
+      normalizeComparable(track.artist) === candidateArtist;
+    const sameAudioUrl = candidateAudioUrl && normalizeComparable(track.audioUrl) === candidateAudioUrl;
+
+    return sameTitleAndArtist || sameAudioUrl;
+  });
+}
 
 export default function DashboardPage() {
   const router = useRouter();
+  const { toast } = useToast();
   const [form, setForm] = useState({
     title: "", artist: "", album: "", duration: "4:20", mood: "Future Pop", color: "#6d5dfc",
-    audioUrl: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3"
+    audioUrl: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
+    coverUrl: ""
   });
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -21,7 +56,21 @@ export default function DashboardPage() {
 
   useEffect(() => {
     const token = localStorage.getItem("auth_token");
+    const storedUser = localStorage.getItem("echowave_user");
     if (!token) { router.replace("/login"); return; }
+
+    // Admin guard — redirect non-admin users back to player
+    try {
+      const user = storedUser ? JSON.parse(storedUser) : null;
+      if (!user || user.email?.toLowerCase() !== "admin@example.com") {
+        router.replace("/");
+        return;
+      }
+    } catch {
+      router.replace("/");
+      return;
+    }
+
     getTracks(token).then((tracks) => {
       setStats({
         total: tracks.length,
@@ -38,16 +87,54 @@ export default function DashboardPage() {
 
   async function handleSubmit(e) {
     e.preventDefault();
-    setError(""); setMessage(""); setIsSubmitting(true);
+    const payload = cleanTrackPayload(form);
+    const missingField = ["title", "artist", "album", "duration", "mood", "color", "audioUrl"].find((field) => !payload[field]);
+
+    setError("");
+    setMessage("");
+
+    if (missingField) {
+      const message = "Please complete all required song fields.";
+      setError(message);
+      toast({
+        title: "Validation Required",
+        description: message,
+        type: "warning"
+      });
+      return;
+    }
+
+    setIsSubmitting(true);
+
     try {
       const token = localStorage.getItem("auth_token");
       if (!token) throw new Error("You must be signed in to upload songs.");
-      await uploadTrack(token, form);
+
+      const currentTracks = await getTracks(token);
+      const duplicate = findDuplicateTrack(currentTracks, payload);
+
+      if (duplicate) {
+        throw new Error(`Duplicate song blocked: "${duplicate.title}" by ${duplicate.artist} already exists.`);
+      }
+
+      await uploadTrack(token, payload);
       setMessage("Track uploaded successfully!");
+      toast({
+        title: "Song Uploaded",
+        description: `"${payload.title}" was added to your app.`,
+        type: "success"
+      });
       setForm((c) => ({ ...c, title: "", artist: "", album: "" }));
       const tracks = await getTracks(token);
       setStats({ total: tracks.length, artists: new Set(tracks.map((t) => t.artist)).size, moods: new Set(tracks.map((t) => t.mood)).size });
-    } catch (err) { setError(err.message); }
+    } catch (err) {
+      setError(err.message);
+      toast({
+        title: err.message.toLowerCase().includes("duplicate") ? "Duplicate Song" : "Upload Failed",
+        description: err.message,
+        type: err.message.toLowerCase().includes("duplicate") ? "warning" : "error"
+      });
+    }
     finally { setIsSubmitting(false); }
   }
 
@@ -131,6 +218,7 @@ export default function DashboardPage() {
                 <label><span>Accent color</span><input type="color" name="color" value={form.color} onChange={updateField} style={{ height: 48, padding: "4px 8px" }} /></label>
               </div>
               <label><span>Audio URL</span><input name="audioUrl" value={form.audioUrl} onChange={updateField} required /></label>
+              <label><span>Cover Image URL <span style={{ color: "var(--muted)", fontWeight: 400 }}>(optional)</span></span><input name="coverUrl" value={form.coverUrl} onChange={updateField} placeholder="https://images.unsplash.com/..." /></label>
 
               {message && <div className="success-box"><CheckCircle2 size={18} /><span>{message}</span></div>}
               {error && <div className="error-box"><XCircle size={18} /><span>{error}</span></div>}

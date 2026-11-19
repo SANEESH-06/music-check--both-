@@ -9,10 +9,21 @@ export function buildApp() {
     logger: env.nodeEnv !== "test"
   });
 
+  const devOrigins = [
+    env.clientUrl,
+    "http://localhost:8081",
+    "http://127.0.0.1:8081",
+    "http://localhost:8082",
+    "http://127.0.0.1:8082",
+    "http://192.168.29.223:8082"
+  ];
+
   app.register(helmet);
   app.register(cors, {
-    origin: env.clientUrl,
-    credentials: true
+    origin: env.nodeEnv === "development" ? devOrigins : env.clientUrl,
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"]
   });
   app.register(routes, { prefix: "/api" });
 

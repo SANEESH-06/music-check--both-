@@ -1,5 +1,20 @@
-const API_URL = "http://192.168.29.223:5000/api"; // Auto-detected local IP for physical device
-// For Android emulator use: http://10.0.2.2:5000/api
+import { Platform } from "react-native";
+import Constants from "expo-constants";
+
+const debuggerHost =
+    Constants.expoConfig?.hostUri ||
+    Constants.expoGoConfig?.debuggerHost ||
+    Constants.manifest2?.extra?.expoGo?.debuggerHost ||
+    Constants.manifest?.debuggerHost ||
+    Constants.linkingUri;
+const localHost = debuggerHost?.split(":")[0];
+const isLoopbackHost = ["localhost", "127.0.0.1", "0.0.0.0"].includes(localHost);
+const DEFAULT_API_URL = localHost && !isLoopbackHost
+    ? `http://${localHost}:5000/api`
+    : Platform.OS === "android"
+        ? "http://10.0.2.2:5000/api"
+        : "http://127.0.0.1:5000/api";
+const API_URL = process.env.EXPO_PUBLIC_API_URL || DEFAULT_API_URL;
 
 export async function loginUser(credentials) {
     const res = await fetch(`${API_URL}/auth/login`, {
@@ -44,6 +59,30 @@ export async function uploadTrack(token, track) {
     const data = await res.json();
     if (!res.ok) throw new Error(data.message || "Upload failed.");
     return data.track;
+}
+
+export async function deleteTrack(token, trackId) {
+    const res = await fetch(`${API_URL}/tracks/${trackId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.message || "Delete failed.");
+    return data;
+}
+
+export async function deleteAllTracks(token) {
+    const res = await fetch(`${API_URL}/tracks`, {
+        method: "DELETE",
+        headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ confirm: "DELETE_ALL_TRACKS" }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.message || "Delete all failed.");
+    return data;
 }
 
 export async function scrapeTracks(token) {
